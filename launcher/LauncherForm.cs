@@ -221,7 +221,7 @@ namespace PracticeToolLauncher
             await Task.Run(() => installer.PrepareAsync(progress, lifetime.Token));
             runtimeReady = true;
             SetRuntimeReady();
-            Log("运行环境已就绪。");
+            Log("运行环境已就绪。" + installer.PythonDescription);
         }
 
         private void ReportProgress(InstallProgress update)
@@ -242,7 +242,7 @@ namespace PracticeToolLauncher
         {
             runtimeState.Text = "已就绪";
             runtimeState.ForeColor = Success;
-            runtimeDetail.Text = "Python " + RuntimePackage.Version + " · 应用专用";
+            runtimeDetail.Text = installer.PythonDescription;
             progressBar.Style = ProgressBarStyle.Blocks;
             progressBar.Value = 100;
         }
@@ -254,7 +254,11 @@ namespace PracticeToolLauncher
                 await StopServiceAsync();
                 return;
             }
-            if (!runtimeReady) await PrepareAsync();
+            if (!runtimeReady || !File.Exists(installer.PythonPath))
+            {
+                runtimeReady = false;
+                await PrepareAsync();
+            }
             if (closing) return;
             serviceState.Text = "正在启动";
             serviceState.ForeColor = Accent;

@@ -23,7 +23,7 @@ namespace PracticeToolLauncher
                 {
                     FileName = installer.PythonPath,
                     WorkingDirectory = installer.AppDirectory,
-                    Arguments = "-B -u -c \"" + command + "\" \"" + installer.AppDirectory
+                    Arguments = "-I -S -B -u -c \"" + command + "\" \"" + installer.AppDirectory
                         + "\" --data-dir \"" + installer.DataDirectory + "\" --port " + port,
                     UseShellExecute = false,
                     CreateNoWindow = true,

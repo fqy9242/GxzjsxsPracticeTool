@@ -91,16 +91,18 @@ namespace PracticeToolLauncher
         private readonly string appHash;
         private readonly byte[] appZip;
         private readonly Func<HttpMessageHandler> httpHandler;
+        private readonly Func<CancellationToken, LocalPython> findLocalPython;
         internal readonly string AppDirectory;
         internal readonly string DataDirectory;
 
         internal RuntimeInstaller(string dataDirectory, RuntimePackage package, byte[] appZip,
-            Func<HttpMessageHandler> httpHandler = null)
+            Func<HttpMessageHandler> httpHandler = null, Func<CancellationToken, LocalPython> findLocalPython = null)
         {
             DataDirectory = Path.GetFullPath(dataDirectory);
             this.package = package;
             this.appZip = appZip;
             this.httpHandler = httpHandler ?? (() => new HttpClientHandler { AllowAutoRedirect = false });
+            this.findLocalPython = findLocalPython ?? LocalPython.Find;
             using (var app = new MemoryStream(appZip, false)) appHash = Hash(app);
             managed = Path.Combine(DataDirectory, ManagedDirectory);
             runtime = Path.Combine(managed, "python-" + RuntimePackage.Version + "-" + package.Architecture);
@@ -121,7 +123,8 @@ namespace PracticeToolLauncher
             }
         }
 
-        internal string PythonPath { get { return Path.Combine(runtime, "python.exe"); } }
+        internal string PythonPath { get; private set; }
+        internal string PythonDescription { get; private set; }
 
         internal bool HasFiles
         {
@@ -130,43 +133,60 @@ namespace PracticeToolLauncher
 
         internal async Task PrepareAsync(IProgress<InstallProgress> progress, CancellationToken cancel)
         {
+            PythonPath = null;
+            PythonDescription = null;
             EnsureOrdinary(DataDirectory);
             EnsureOrdinary(managed);
-            Directory.CreateDirectory(managed);
-            EnsureOrdinary(runtime);
             EnsureOrdinary(AppDirectory);
 
-            if (!Complete(runtime, package.Sha256, "python.exe", "python314.dll", "python314.zip", "python314._pth",
-                "_sqlite3.pyd", "sqlite3.dll", "_ssl.pyd", "_ctypes.pyd"))
+            progress.Report(new InstallProgress("正在查找本机 Python", -1));
+            LocalPython local = findLocalPython(cancel);
+            cancel.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(managed);
+            if (local == null)
             {
-                var work = Path.Combine(managed, ".install-" + Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(work);
-                try
-                {
-                    string zip = Path.Combine(work, "python.zip");
-                    progress.Report(new InstallProgress("正在从 Python 官网下载运行环境", 0));
-                    await DownloadAsync(zip, progress, cancel).ConfigureAwait(false);
-                    cancel.ThrowIfCancellationRequested();
-                    progress.Report(new InstallProgress("正在校验并解压运行环境", 85));
-                    using (var file = File.OpenRead(zip))
-                    {
-                        if (!String.Equals(Hash(file), package.Sha256, StringComparison.OrdinalIgnoreCase))
-                            throw new InvalidDataException("运行环境的 SHA-256 校验失败，请重试。");
-                        file.Position = 0;
-                        InstallZip(file, runtime, package.Sha256, cancel);
-                    }
-                }
-                finally
-                {
-                    Directory.Delete(work, true);
-                }
+                await PrepareManagedPythonAsync(progress, cancel).ConfigureAwait(false);
             }
+
             if (!Complete(AppDirectory, appHash, "practice_tool/managed_service.py", "practice_tool/web_assets/dashboard.html"))
             {
                 progress.Report(new InstallProgress("正在准备签到服务", 95));
                 using (var file = new MemoryStream(appZip, false)) InstallZip(file, AppDirectory, appHash, cancel);
             }
+
+            PythonPath = local != null ? local.Path : Path.Combine(runtime, "python.exe");
+            PythonDescription = local != null ? "Python " + local.Version + " · 本机环境"
+                : "Python " + RuntimePackage.Version + " · 独立环境";
             progress.Report(new InstallProgress("运行环境已就绪", 100));
+        }
+
+        private async Task PrepareManagedPythonAsync(IProgress<InstallProgress> progress, CancellationToken cancel)
+        {
+            EnsureOrdinary(runtime);
+            if (Complete(runtime, package.Sha256, "python.exe", "python314.dll", "python314.zip", "python314._pth",
+                "_sqlite3.pyd", "sqlite3.dll", "_ssl.pyd", "_ctypes.pyd"))
+                return;
+            var work = Path.Combine(managed, ".install-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(work);
+            try
+            {
+                string zip = Path.Combine(work, "python.zip");
+                progress.Report(new InstallProgress("未检测到本机 Python，正在准备下载", 0));
+                await DownloadAsync(zip, progress, cancel).ConfigureAwait(false);
+                cancel.ThrowIfCancellationRequested();
+                progress.Report(new InstallProgress("正在校验并解压运行环境", 85));
+                using (var file = File.OpenRead(zip))
+                {
+                    if (!String.Equals(Hash(file), package.Sha256, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("运行环境的 SHA-256 校验失败，请重试。");
+                    file.Position = 0;
+                    InstallZip(file, runtime, package.Sha256, cancel);
+                }
+            }
+            finally
+            {
+                Directory.Delete(work, true);
+            }
         }
 
         private async Task DownloadAsync(string destination, IProgress<InstallProgress> progress, CancellationToken cancel)
