@@ -1,6 +1,6 @@
 "use strict";
 
-const form = document.getElementById("simulation-form");
+const simulationForm = document.getElementById("simulation-form");
 const output = document.getElementById("simulation-result");
 const earthRadiusMetres = 6378137;
 const metreFormat = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 4 });
@@ -16,11 +16,11 @@ function distanceMetres(fromLat, fromLng, toLat, toLng) {
   return Math.round(2 * earthRadiusMetres * Math.asin(Math.sqrt(Math.min(1, chord))) * 1e4) / 1e4;
 }
 
-form.addEventListener("input", () => { output.hidden = true; });
-form.addEventListener("submit", (event) => {
+simulationForm.addEventListener("input", () => { output.hidden = true; });
+simulationForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (!form.reportValidity()) return;
-  const fields = form.elements;
+  if (!simulationForm.reportValidity()) return;
+  const fields = simulationForm.elements;
   const distance = distanceMetres(
     fields.reference_latitude.valueAsNumber, fields.reference_longitude.valueAsNumber,
     fields.point_latitude.valueAsNumber, fields.point_longitude.valueAsNumber,
@@ -36,3 +36,4 @@ form.addEventListener("submit", (event) => {
   output.replaceChildren(status, details);
   output.hidden = false;
 });
+document.getElementById("calculate-distance").disabled = false;

@@ -10,6 +10,19 @@ const fields = form.elements;
 const formError = byId("form-error");
 const deleteButton = byId("delete-account");
 const saveButton = byId("save-account");
+const mailDialog = byId("mail-dialog");
+const mailForm = byId("mail-form");
+const mailFields = mailForm.elements;
+const mailError = byId("mail-error");
+const mailSettingsButton = byId("mail-settings");
+const saveMailButton = byId("save-mail");
+const navLinks = document.querySelectorAll("[data-view]");
+const views = {
+  accounts: ["账号管理", "管理实习账号和每日自动签到计划。"],
+  history: ["调度中心", "查看最近 100 条执行结果 · 北京时间"],
+  simulation: ["位置模拟", "输入两个测试点计算距离。两组经纬度请使用同一坐标系。"],
+};
+const localDashboard = ["127.0.0.1", "localhost"].includes(location.hostname);
 const busyAccounts = new Set();
 const results = {
   running: ["执行中", "active"],
@@ -19,7 +32,13 @@ const results = {
   failed: ["执行失败", "warning"],
   interrupted: ["已中断", "warning"],
 };
+const mailResults = {
+  sent: "提醒邮件已发送",
+  failed: "提醒邮件发送失败",
+  not_configured: "未配置发件邮箱",
+};
 let data = { accounts: [], runs: [], today: "" };
+let activeView = "accounts";
 let editing = null;
 let refreshing = null;
 let snapshot = "";
@@ -76,6 +95,7 @@ function accountRow(account) {
   const row = document.createElement("tr");
   const identity = element("td");
   identity.append(element("strong", account.name, "account-name"), element("span", account.username, "account-sub"));
+  if (account.reminder_enabled) identity.append(element("span", "邮件提醒已开启", "account-sub"));
   const plan = element("td");
   if (account.enabled) {
     plan.append(element("strong", account.check_time), element("span", account.weekdays_only ? "周一至周五" : "每天", "account-sub"));
@@ -105,12 +125,14 @@ function runRow(run) {
   const state = element("td");
   state.append(badge(...(results[run.state] || ["待核对", "muted"])));
   const source = { manual: "手动签到", automatic: "自动签到", status: "查询状态" };
+  const receipt = element("td", run.message || "正在等待平台结果…", "result-cell");
+  if (mailResults[run.mail_state]) receipt.append(element("span", mailResults[run.mail_state], "account-sub"));
   row.append(
     element("td", timeText(run.started_at), "time-cell"),
     element("td", run.name),
     element("td", source[run.source] || "—"),
     state,
-    element("td", run.message || "正在等待平台结果…", "result-cell"),
+    receipt,
   );
   return row;
 }
@@ -124,7 +146,7 @@ function renderAccounts() {
 }
 
 function refresh() {
-  if (!refreshing) {
+  if (activeView !== "simulation" && !refreshing) {
     refreshing = request("/api/dashboard").then((next) => {
       const key = JSON.stringify(next);
       data = next;
@@ -145,23 +167,37 @@ function refresh() {
   return refreshing;
 }
 
-function setView(view) {
-  const history = view === "history";
-  byId("accounts-view").hidden = history;
-  byId("history-view").hidden = !history;
-  byId("add-account").hidden = history;
-  byId("page-title").textContent = history ? "调度中心" : "账号管理";
-  byId("page-description").textContent = history ? "查看最近 100 条执行结果 · 北京时间" : "管理实习账号和每日自动签到计划。";
-  for (const button of document.querySelectorAll("[data-view]")) {
-    if (button.dataset.view === view) button.setAttribute("aria-current", "page");
-    else button.removeAttribute("aria-current");
+function syncView() {
+  const link = [...navLinks].find((item) => item.pathname === location.pathname);
+  activeView = link?.dataset.view || "accounts";
+  const [title, description] = views[activeView];
+  document.title = `${title} · PracticeTool`;
+  byId("page-title").textContent = title;
+  byId("page-description").textContent = description;
+  byId("account-actions").hidden = activeView !== "accounts";
+  if (activeView !== "accounts") {
+    dialog.close();
+    mailDialog.close();
   }
+  for (const item of navLinks) {
+    const selected = item.dataset.view === activeView;
+    byId(`${item.dataset.view}-view`).hidden = !selected;
+    if (selected) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  }
+  refresh();
 }
 
 function updateLocationFields() {
   const showSite = fields.location_mode.value === "site";
   byId("location-fields").hidden = !showSite;
   fields.site_latitude.disabled = fields.site_longitude.disabled = fields.site_radius.disabled = !showSite;
+}
+
+function updateReminderFields() {
+  const enabled = fields.reminder_enabled.checked;
+  byId("reminder-fields").hidden = !enabled;
+  fields.reminder_email.disabled = !enabled;
 }
 
 function openEditor(account = null) {
@@ -183,6 +219,9 @@ function openEditor(account = null) {
   fields.enabled.checked = Boolean(account?.enabled);
   fields.check_time.value = account?.check_time || "09:00";
   fields.weekdays_only.value = account?.weekdays_only === 0 ? "false" : "true";
+  fields.reminder_enabled.checked = Boolean(account?.reminder_enabled);
+  fields.reminder_email.value = account?.reminder_email || "";
+  updateReminderFields();
   deleteButton.hidden = !account;
   dialog.showModal();
   fields.name.focus();
@@ -209,13 +248,21 @@ async function runAccount(id, action) {
   }
 }
 
-for (const button of document.querySelectorAll("[data-view]")) {
-  button.addEventListener("click", () => { setView(button.dataset.view); refresh(); });
+for (const link of navLinks) {
+  if (!localDashboard && link.dataset.view === "history") link.hidden = true;
+  link.addEventListener("click", (event) => {
+    if (!localDashboard || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (location.pathname !== link.pathname) history.pushState(null, "", link.pathname);
+    syncView();
+  });
 }
+window.addEventListener("popstate", syncView);
 byId("add-account").addEventListener("click", () => openEditor());
 byId("close-dialog").addEventListener("click", () => dialog.close());
 byId("cancel-dialog").addEventListener("click", () => dialog.close());
 fields.location_mode.addEventListener("change", updateLocationFields);
+fields.reminder_enabled.addEventListener("change", updateReminderFields);
 dialog.addEventListener("close", () => { fields.password.value = ""; });
 
 form.addEventListener("submit", async (event) => {
@@ -237,6 +284,8 @@ form.addEventListener("submit", async (event) => {
       enabled: fields.enabled.checked,
       check_time: fields.check_time.value,
       weekdays_only: fields.weekdays_only.value === "true",
+      reminder_enabled: fields.reminder_enabled.checked,
+      reminder_email: fields.reminder_enabled.checked ? fields.reminder_email.value : editing?.reminder_email || "",
     });
     dialog.close();
     notify("账号已保存。");
@@ -263,6 +312,58 @@ deleteButton.addEventListener("click", async () => {
   }
 });
 
-refresh();
+mailSettingsButton.addEventListener("click", async () => {
+  mailSettingsButton.disabled = true;
+  try {
+    const config = await request("/api/mail-settings");
+    if (activeView !== "accounts") return;
+    mailForm.reset();
+    mailError.hidden = true;
+    mailFields.sender.value = config.sender;
+    mailFields.host.value = config.host;
+    mailFields.port.value = config.port;
+    mailFields.security.value = config.security;
+    mailFields.password.required = !config.configured;
+    mailFields.password.placeholder = config.configured ? "留空保留已保存的凭据" : "";
+    mailDialog.showModal();
+  } catch (error) {
+    notify(error.message, "warning");
+  } finally {
+    mailSettingsButton.disabled = false;
+  }
+});
+
+byId("close-mail").addEventListener("click", () => mailDialog.close());
+byId("cancel-mail").addEventListener("click", () => mailDialog.close());
+mailDialog.addEventListener("close", () => { mailFields.password.value = ""; });
+mailFields.security.addEventListener("change", () => {
+  const ssl = mailFields.security.value === "ssl";
+  if (mailFields.port.valueAsNumber === (ssl ? 587 : 465)) mailFields.port.value = ssl ? 465 : 587;
+});
+
+mailForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (saveMailButton.disabled) return;
+  saveMailButton.disabled = true;
+  mailError.hidden = true;
+  try {
+    await request("/api/mail-settings", {
+      sender: mailFields.sender.value,
+      host: mailFields.host.value,
+      port: mailFields.port.valueAsNumber,
+      security: mailFields.security.value,
+      password: mailFields.password.value,
+    });
+    mailDialog.close();
+    notify("发件设置已保存。");
+  } catch (error) {
+    mailError.textContent = error.message;
+    mailError.hidden = false;
+  } finally {
+    saveMailButton.disabled = false;
+  }
+});
+
+syncView();
 setInterval(() => { if (!document.hidden) refresh(); }, 4000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });

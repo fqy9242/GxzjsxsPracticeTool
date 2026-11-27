@@ -6,14 +6,15 @@
     <title>签到管理 · PracticeTool</title>
     <link rel="stylesheet" href="/dashboard.css">
     <script src="/dashboard.js" defer></script>
+    <script src="/simulate-location.js" defer></script>
   </head>
   <body>
     <header class="topbar">
       <a class="brand" href="/">PracticeTool</a>
       <nav aria-label="主导航">
-        <button type="button" data-view="accounts" aria-current="page">账号管理</button>
-        <button type="button" data-view="history">调度中心</button>
-        <a href="/simulate-location">位置模拟</a>
+        <a href="/" data-view="accounts">账号管理</a>
+        <a href="/schedule" data-view="history">调度中心</a>
+        <a href="/simulate-location" data-view="simulation">位置模拟</a>
       </nav>
       <a class="repository-link" href="https://github.com/fqy9242/GxzjsxsPracticeTool" target="_blank" rel="noopener noreferrer">GitHub</a>
     </header>
@@ -24,11 +25,14 @@
             <h1 id="page-title">账号管理</h1>
             <p id="page-description">管理实习账号和每日自动签到计划。</p>
           </div>
-          <button id="add-account" class="button primary" type="button">＋ 添加账号</button>
+          <div class="page-actions" id="account-actions" hidden>
+            <button id="mail-settings" class="button secondary" type="button">发件设置</button>
+            <button id="add-account" class="button primary" type="button">＋ 添加账号</button>
+          </div>
         </div>
         <p class="notice" id="notice" role="status" hidden></p>
 
-        <section id="accounts-view" aria-labelledby="page-title">
+        <section id="accounts-view" aria-labelledby="page-title" hidden>
           <div class="metrics" aria-label="账号概览">
             <span>账号 <strong id="total-count">—</strong></span>
             <span>启用计划 <strong id="scheduled-count">—</strong></span>
@@ -54,7 +58,7 @@
           <div class="panel">
             <div class="table-scroll" tabindex="0" aria-label="调度记录">
               <table>
-                <thead><tr><th scope="col">时间</th><th scope="col">账号</th><th scope="col">操作</th><th scope="col">结果</th><th scope="col">平台回执</th></tr></thead>
+                <thead><tr><th scope="col">时间</th><th scope="col">账号</th><th scope="col">操作</th><th scope="col">结果</th><th scope="col">回执与提醒</th></tr></thead>
                 <tbody id="runs"></tbody>
               </table>
             </div>
@@ -63,6 +67,32 @@
               <p>账号查询和签到的结果会显示在这里。</p>
             </div>
           </div>
+        </section>
+
+        <section id="simulation-view" aria-labelledby="page-title" hidden>
+          <form id="simulation-form" class="panel simulation-form">
+            <fieldset>
+              <legend>参考点</legend>
+              <div class="coordinate-pair">
+                <div><label for="reference-latitude">纬度</label><input id="reference-latitude" name="reference_latitude" type="number" min="-90" max="90" step="any" value="24" required></div>
+                <div><label for="reference-longitude">经度</label><input id="reference-longitude" name="reference_longitude" type="number" min="-180" max="180" step="any" value="108" required></div>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>模拟位置</legend>
+              <div class="coordinate-pair">
+                <div><label for="point-latitude">纬度</label><input id="point-latitude" name="point_latitude" type="number" min="-90" max="90" step="any" value="24.0005" required></div>
+                <div><label for="point-longitude">经度</label><input id="point-longitude" name="point_longitude" type="number" min="-180" max="180" step="any" value="108" required></div>
+              </div>
+            </fieldset>
+            <div class="simulation-radius">
+              <label for="radius">测试范围（米）</label>
+              <input id="radius" name="radius" type="number" min="0" step="any" value="100" required>
+            </div>
+            <button id="calculate-distance" class="button primary" type="submit" disabled>计算距离</button>
+            <output id="simulation-result" class="simulation-result" aria-live="polite" hidden></output>
+          </form>
+          <p class="footnote">模拟结果在浏览器内计算。手动和定时签到使用设备的实际定位。</p>
         </section>
       </div>
     </main>
@@ -99,10 +129,40 @@
             <div><label for="schedule-days">频率</label><select id="schedule-days" name="weekdays_only"><option value="true">周一至周五</option><option value="false">每天</option></select></div>
           </div>
         </div>
+        <label class="check-option"><input type="checkbox" name="reminder_enabled" id="reminder-enabled"> 启用邮件提醒</label>
+        <div id="reminder-fields" class="location-fields" hidden>
+          <label for="reminder-email">收件邮箱</label>
+          <input id="reminder-email" name="reminder_email" type="email" maxlength="254" required disabled>
+          <p class="field-hint">手动或定时签到结束后发送结果。发件邮箱在账号管理的「发件设置」中配置。</p>
+        </div>
         <p id="form-error" class="form-error" role="alert" hidden></p>
         <div class="dialog-actions">
           <button id="delete-account" type="button" class="button danger" hidden>删除账号</button>
           <div><button id="cancel-dialog" type="button" class="button secondary">取消</button><button id="save-account" type="submit" class="button primary">保存</button></div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="mail-dialog" aria-labelledby="mail-title">
+      <form id="mail-form">
+        <div class="dialog-header">
+          <h2 id="mail-title">发件设置</h2>
+          <button type="button" id="close-mail" class="icon-button" aria-label="关闭">×</button>
+        </div>
+        <label for="smtp-sender">发件邮箱</label>
+        <input id="smtp-sender" name="sender" type="email" maxlength="254" autocomplete="off" required>
+        <label for="smtp-host">SMTP 服务器</label>
+        <input id="smtp-host" name="host" maxlength="253" autocomplete="off" required>
+        <div class="schedule-fields">
+          <div><label for="smtp-security">加密方式</label><select id="smtp-security" name="security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option></select></div>
+          <div><label for="smtp-port">端口</label><input id="smtp-port" name="port" type="number" min="1" max="65535" value="465" required></div>
+        </div>
+        <label for="smtp-password">SMTP 授权码或密码</label>
+        <input id="smtp-password" name="password" type="password" maxlength="500" autocomplete="new-password" required>
+        <p class="field-hint">请使用邮箱服务商提供的 SMTP 参数。授权码或密码会加密保存在本机。</p>
+        <p id="mail-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <div><button id="cancel-mail" type="button" class="button secondary">取消</button><button id="save-mail" type="submit" class="button primary">保存</button></div>
         </div>
       </form>
     </dialog>

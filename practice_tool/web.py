@@ -19,14 +19,14 @@ from .secrets import SecretError
 
 _ASSET_DIR = Path(__file__).with_name("web_assets")
 _ASSETS = {
-    "/simulate-location": ("simulate-location.html", "text/html; charset=utf-8"),
     "/simulate-location.js": ("simulate-location.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
     "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
 }
-_ACCOUNT_ROUTES = {"/api/accounts", "/api/accounts/delete", "/api/accounts/run"}
+_MAIL_SETTINGS = "/api/mail-settings"
+_ACCOUNT_ROUTES = {"/api/accounts", "/api/accounts/delete", "/api/accounts/run", _MAIL_SETTINGS}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 _MAX_BODY_SIZE = 8192
 
@@ -53,15 +53,21 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
 
         path = self.path.partition("?")[0]
-        if path == "/api/dashboard":
+        if path in ("/api/dashboard", _MAIL_SETTINGS):
             if self._allow_dashboard():
                 try:
-                    self._send_json(HTTPStatus.OK, **self.server.accounts.overview())
+                    accounts = self.server.accounts
+                    data = accounts.mail_settings() if path == _MAIL_SETTINGS else accounts.overview()
+                    self._send_json(HTTPStatus.OK, **data)
                 except sqlite3.Error:
-                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error="暂时无法读取签到记录。")
+                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error="暂时无法读取管理台数据。")
             return
+        loopback = self._loopback_request()
         if path == "/":
-            filename = "dashboard.html" if self._loopback_request() else "index.html"
+            filename = "dashboard.html" if loopback else "index.html"
+            content_type = "text/html; charset=utf-8"
+        elif path == "/simulate-location" or (path == "/schedule" and loopback):
+            filename = "dashboard.html"
             content_type = "text/html; charset=utf-8"
         elif path in _ASSETS:
             filename, content_type = _ASSETS[path]
@@ -71,7 +77,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
         self._send(
             HTTPStatus.OK, content_type, (_ASSET_DIR / filename).read_bytes(),
-            static_simulation=path == "/simulate-location",
+            static_simulation=path == "/simulate-location" and not loopback,
         )
 
     def do_POST(self) -> None:
@@ -104,6 +110,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def _manage_account(self, data: dict) -> None:
         accounts = self.server.accounts
         try:
+            if self.path == _MAIL_SETTINGS:
+                accounts.save_mail_settings(data)
+                self._send_json(HTTPStatus.OK, configured=True)
+                return
             if self.path == "/api/accounts":
                 account_id = accounts.save(data)
                 self._send_json(HTTPStatus.OK, id=account_id)
@@ -125,7 +135,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         except SecretError as error:
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error=str(error))
         except sqlite3.Error:
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error="暂时无法更新账号数据。")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error="暂时无法更新管理台数据。")
 
     def _submit_check_in(self, data: dict) -> None:
         latitude, longitude = data.get("latitude"), data.get("longitude")

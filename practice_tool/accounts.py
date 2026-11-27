@@ -16,6 +16,7 @@ from typing import Optional
 
 from .client import PracticeClient, PracticeError, SessionExpired
 from .location import LocationError, device_position, distance_metres
+from .mail import mailbox, send_reminder
 from .secrets import SecretError, seal, unseal
 
 
@@ -34,7 +35,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     enabled INTEGER NOT NULL,
     check_time TEXT NOT NULL,
     weekdays_only INTEGER NOT NULL,
-    check_location TEXT
+    check_location TEXT,
+    reminder_enabled INTEGER NOT NULL DEFAULT 0,
+    reminder_email TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,7 +47,16 @@ CREATE TABLE IF NOT EXISTS runs (
     state TEXT NOT NULL,
     message TEXT NOT NULL DEFAULT '',
     started_at TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    mail_state TEXT
+);
+CREATE TABLE IF NOT EXISTS mail_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    security TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    password BLOB NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS daily_automatic ON runs(account_id, day) WHERE source = 'automatic';
 CREATE UNIQUE INDEX IF NOT EXISTS active_account ON runs(account_id) WHERE state = 'running';
@@ -99,6 +111,12 @@ class Accounts:
             columns = {column["name"] for column in db.execute("PRAGMA table_info(accounts)")}
             if "check_location" not in columns:
                 db.execute("ALTER TABLE accounts ADD COLUMN check_location TEXT")
+            if "reminder_enabled" not in columns:
+                db.execute("ALTER TABLE accounts ADD COLUMN reminder_enabled INTEGER NOT NULL DEFAULT 0")
+            if "reminder_email" not in columns:
+                db.execute("ALTER TABLE accounts ADD COLUMN reminder_email TEXT NOT NULL DEFAULT ''")
+            if not any(column["name"] == "mail_state" for column in db.execute("PRAGMA table_info(runs)")):
+                db.execute("ALTER TABLE runs ADD COLUMN mail_state TEXT")
         self._stop = threading.Event()
         self._executor = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="practice-check-in")
         self._scheduler = threading.Thread(target=self._schedule, name="practice-scheduler", daemon=True)
@@ -137,6 +155,7 @@ class Accounts:
             self._expire_runs(db, now)
             accounts = db.execute(
                 """SELECT a.id, a.name, a.username, a.enabled, a.check_time, a.weekdays_only, a.check_location,
+                          a.reminder_enabled, a.reminder_email,
                           a.session IS NOT NULL AS has_session, r.state, r.message, r.started_at, r.finished_at,
                           EXISTS(SELECT 1 FROM runs AS t WHERE t.account_id = a.id AND t.day = ?
                                  AND t.state IN ('signed', 'already_signed')) AS signed_today
@@ -145,7 +164,7 @@ class Accounts:
                    ORDER BY a.id""", (day,),
             ).fetchall()
             runs = db.execute(
-                """SELECT r.id, r.account_id, a.name, r.source, r.state, r.message, r.started_at, r.finished_at
+                """SELECT r.id, r.account_id, a.name, r.source, r.state, r.message, r.started_at, r.finished_at, r.mail_state
                    FROM runs AS r JOIN accounts AS a ON a.id = r.account_id
                    ORDER BY r.id DESC LIMIT 100"""
             ).fetchall()
@@ -192,9 +211,11 @@ class Accounts:
             with self._db() as db:
                 db.execute("BEGIN IMMEDIATE")
                 if account_id is None:
+                    reminder_enabled, reminder_email = self._reminder(data)
                     return db.execute(
-                        """INSERT INTO accounts (name, username, password, enabled, check_time, weekdays_only, check_location)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""", (name, username, secret, enabled, check_time, weekdays_only, location),
+                        """INSERT INTO accounts (name, username, password, enabled, check_time, weekdays_only,
+                           check_location, reminder_enabled, reminder_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (name, username, secret, enabled, check_time, weekdays_only, location, reminder_enabled, reminder_email),
                     ).lastrowid
                 self._expire_runs(db, datetime.now(BEIJING))
                 account = self._account(db, account_id)
@@ -203,15 +224,65 @@ class Accounts:
                     raise DashboardError("已有账号的登录名固定。请添加另一个实习账号。")
                 if "check_location" not in data:
                     location = account["check_location"]
+                reminder_enabled, reminder_email = self._reminder(data, account)
                 db.execute(
                     """UPDATE accounts SET name = ?, username = ?, password = ?, session = ?,
-                           enabled = ?, check_time = ?, weekdays_only = ?, check_location = ? WHERE id = ?""",
+                           enabled = ?, check_time = ?, weekdays_only = ?, check_location = ?,
+                           reminder_enabled = ?, reminder_email = ? WHERE id = ?""",
                     (name, username, secret or account["password"], None if secret else account["session"],
-                     enabled, check_time, weekdays_only, location, account_id),
+                     enabled, check_time, weekdays_only, location, reminder_enabled, reminder_email, account_id),
                 )
         except sqlite3.IntegrityError:
             raise DashboardError("这个实习账号已经添加。", HTTPStatus.CONFLICT) from None
         return account_id
+
+    @staticmethod
+    def _reminder(data: dict, account: Optional[sqlite3.Row] = None) -> tuple[bool, str]:
+        enabled = data.get("reminder_enabled", bool(account["reminder_enabled"]) if account else False)
+        email = data.get("reminder_email", account["reminder_email"] if account else "")
+        if type(enabled) is not bool:
+            raise DashboardError("请选择是否启用邮件提醒。")
+        if not isinstance(email, str):
+            raise DashboardError("请填写有效的收件邮箱。")
+        try:
+            return enabled, mailbox(email) if enabled or email.strip() else ""
+        except ValueError:
+            raise DashboardError("请填写有效的收件邮箱。") from None
+
+    def mail_settings(self) -> dict:
+        with self._db() as db:
+            config = db.execute("SELECT host, port, security, sender FROM mail_settings WHERE id = 1").fetchone()
+        if config is None:
+            return {"configured": False, "host": "", "port": 465, "security": "ssl", "sender": ""}
+        return {"configured": True, **dict(config)}
+
+    def save_mail_settings(self, data: dict) -> None:
+        host, port = data.get("host"), data.get("port")
+        security, password = data.get("security"), data.get("password", "")
+        if not isinstance(host, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", host.strip()):
+            raise DashboardError("请填写有效的 SMTP 服务器地址。")
+        if type(port) is not int or not 1 <= port <= 65535 or security not in ("ssl", "starttls"):
+            raise DashboardError("请检查 SMTP 端口和加密方式。")
+        if not isinstance(password, str) or len(password) > 500:
+            raise DashboardError("请检查 SMTP 授权码或密码。")
+        try:
+            sender = mailbox(data.get("sender"))
+        except ValueError:
+            raise DashboardError("请填写有效的发件邮箱。") from None
+        secret = seal(password.encode()) if password else None
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute("SELECT host, sender, password FROM mail_settings WHERE id = 1").fetchone()
+            if secret is None:
+                if previous is None or (host.strip(), sender) != (previous["host"], previous["sender"]):
+                    raise DashboardError("请填写发件邮箱的 SMTP 授权码或密码。")
+                secret = previous["password"]
+            db.execute(
+                """INSERT INTO mail_settings (id, host, port, security, sender, password) VALUES (1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET host = excluded.host, port = excluded.port,
+                   security = excluded.security, sender = excluded.sender, password = excluded.password""",
+                (host.strip(), port, security, sender, secret),
+            )
 
     def delete(self, account_id: int) -> None:
         with self._db() as db:
@@ -341,14 +412,16 @@ class Accounts:
         except SecretError:
             message += " 登录会话未能保存。"
         try:
-            self._finish(run_id, account["id"], state, message, session)
+            finished = self._finish(run_id, account["id"], state, message, session)
         except sqlite3.Error:
             logger.exception("%s · 无法保存执行记录。", heading)
         else:
             level = logging.WARNING if state == "failed" else logging.INFO
             logger.log(level, "%s · %s", heading, message)
+            if finished and source != "status" and account["reminder_enabled"]:
+                self._send_reminder(run_id, account, source, state, finished)
 
-    def _finish(self, run_id: int, account_id: int, state: str, message: str, session: Optional[bytes]) -> None:
+    def _finish(self, run_id: int, account_id: int, state: str, message: str, session: Optional[bytes]) -> Optional[str]:
         finished = _timestamp(datetime.now(BEIJING))
         with self._db() as db:
             updated = db.execute(
@@ -357,3 +430,23 @@ class Accounts:
             )
             if updated.rowcount:
                 db.execute("UPDATE accounts SET session = ? WHERE id = ?", (session, account_id))
+                return finished
+        return None
+
+    def _send_reminder(self, run_id: int, account: sqlite3.Row, source: str, state: str, finished: str) -> None:
+        try:
+            with self._db() as db:
+                config = db.execute("SELECT * FROM mail_settings WHERE id = 1").fetchone()
+            mail_state = "not_configured"
+            if config is not None:
+                try:
+                    send_reminder(config, unseal(config["password"]).decode(), account["reminder_email"],
+                                  account["name"], _SOURCE_NAMES[source], state, finished)
+                    mail_state = "sent"
+                except (OSError, ValueError, SecretError) as error:
+                    mail_state = "failed"
+                    logger.warning("执行记录 %s · 邮件发送失败（%s）。", run_id, type(error).__name__)
+            with self._db() as db:
+                db.execute("UPDATE runs SET mail_state = ? WHERE id = ?", (mail_state, run_id))
+        except sqlite3.Error:
+            logger.exception("执行记录 %s · 无法读取发件配置或保存发送结果。", run_id)
