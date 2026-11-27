@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>签到管理 · PracticeTool</title>
+    <link rel="stylesheet" href="/dashboard.css">
+    <script src="/dashboard.js" defer></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="PracticeTool 首页">
+        <span class="brand-mark" aria-hidden="true">P</span>
+        <span>PracticeTool</span>
+      </a>
+      <nav aria-label="主导航">
+        <button type="button" data-view="accounts" aria-current="page">账号管理</button>
+        <button type="button" data-view="history">执行记录</button>
+      </nav>
+      <a class="quick-link" href="/quick">单次签到 <span aria-hidden="true">↗</span></a>
+    </aside>
+    <main>
+      <header class="topbar">
+        <span>实习签到</span>
+        <span id="service" class="pill" data-tone="muted">连接中</span>
+      </header>
+      <div class="content">
+        <div class="page-header">
+          <div>
+            <h1 id="page-title">账号管理</h1>
+            <p id="page-description">管理实习账号和每日自动签到计划。</p>
+          </div>
+          <button id="add-account" class="button primary" type="button">＋ 添加账号</button>
+        </div>
+        <p class="notice" id="notice" role="status" hidden></p>
+
+        <section id="accounts-view" aria-labelledby="page-title">
+          <div class="metrics" aria-label="账号概览">
+            <div><span>管理账号</span><strong id="total-count">—</strong></div>
+            <div><span>启用自动签到</span><strong id="scheduled-count">—</strong></div>
+            <div><span>今日已确认签到</span><strong id="signed-count">—</strong></div>
+          </div>
+          <div class="panel">
+            <div class="table-scroll" tabindex="0" aria-label="账号列表">
+              <table>
+                <thead><tr><th scope="col">实习账号</th><th scope="col">自动签到</th><th scope="col">登录会话</th><th scope="col">今日状态</th><th scope="col" class="action-cell">操作</th></tr></thead>
+                <tbody id="accounts"></tbody>
+              </table>
+            </div>
+            <div id="account-empty" class="empty" hidden>
+              <strong>还没有实习账号</strong>
+              <p>添加账号后，可以查询状态、立即签到或设定执行时间。</p>
+            </div>
+          </div>
+          <p class="footnote">计划按北京时间运行。服务启动后会执行当天已到时间的计划，每个账号每天自动尝试一次。</p>
+        </section>
+
+        <section id="history-view" aria-labelledby="page-title" hidden>
+          <div class="panel">
+            <div class="table-scroll" tabindex="0" aria-label="签到执行记录">
+              <table>
+                <thead><tr><th scope="col">时间</th><th scope="col">账号</th><th scope="col">操作</th><th scope="col">结果</th><th scope="col">平台回执</th></tr></thead>
+                <tbody id="runs"></tbody>
+              </table>
+            </div>
+            <div id="history-empty" class="empty" hidden>
+              <strong>暂无执行记录</strong>
+              <p>账号查询和签到的结果会显示在这里。</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="account-dialog" aria-labelledby="dialog-title">
+      <form id="account-form">
+        <div class="dialog-header">
+          <h2 id="dialog-title">添加账号</h2>
+          <button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button>
+        </div>
+        <label for="account-name">显示名称</label>
+        <input id="account-name" name="name" maxlength="50" required placeholder="例如 我的实习账号">
+        <label for="account-username">实习账号</label>
+        <input id="account-username" name="username" autocomplete="username" maxlength="100" required>
+        <label for="account-password">密码</label>
+        <input id="account-password" name="password" type="password" autocomplete="new-password" maxlength="500" required>
+        <div class="schedule">
+          <label class="check-option"><input type="checkbox" name="enabled" id="schedule-enabled"> 启用自动签到</label>
+          <div class="schedule-fields" id="schedule-fields">
+            <div><label for="schedule-time">时间 · 北京时间</label><input id="schedule-time" name="check_time" type="time" required></div>
+            <div><label for="schedule-days">频率</label><select id="schedule-days" name="weekdays_only"><option value="true">周一至周五</option><option value="false">每天</option></select></div>
+          </div>
+        </div>
+        <p id="form-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="delete-account" type="button" class="button danger" hidden>删除账号</button>
+          <div><button id="cancel-dialog" type="button" class="button secondary">取消</button><button id="save-account" type="submit" class="button primary">保存</button></div>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

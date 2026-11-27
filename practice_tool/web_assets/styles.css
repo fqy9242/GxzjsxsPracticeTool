@@ -1,0 +1,124 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, "Microsoft YaHei UI", sans-serif;
+  color: #152438;
+  background: #eef3f7;
+  line-height: 1.55;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 60rem;
+  margin-inline: auto;
+  padding: clamp(2rem, 7vw, 5rem) clamp(1rem, 4vw, 2rem);
+}
+
+header {
+  margin-bottom: 1.75rem;
+}
+
+h1, h2, p {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(1.9rem, 6vw, 2.85rem);
+  line-height: 1.2;
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  align-items: start;
+  gap: 1rem;
+}
+
+section {
+  border: 1px solid #d4dfe9;
+  border-radius: 1rem;
+  background: #fff;
+  padding: clamp(1.15rem, 4vw, 1.6rem);
+}
+
+h2 {
+  font-size: 1.25rem;
+  margin-bottom: 0.8rem;
+}
+
+.hint {
+  color: #45576a;
+  margin-bottom: 1rem;
+}
+
+form {
+  display: grid;
+  gap: 0.45rem;
+}
+
+label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+input, button {
+  min-height: 2.75rem;
+  font: inherit;
+  border-radius: 0.6rem;
+  padding: 0.55rem 0.8rem;
+}
+
+input {
+  width: 100%;
+  margin-bottom: 0.35rem;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #a2b4c5;
+}
+
+button {
+  width: 100%;
+  border: 1px solid #115749;
+  font-weight: 650;
+  color: #fff;
+  background: #115749;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #0a4137;
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+:focus-visible {
+  outline: 3px solid #236ba8;
+  outline-offset: 2px;
+}
+
+.result {
+  margin-top: 0.85rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.55rem;
+  background: #edf3f8;
+  overflow-wrap: anywhere;
+}
+
+.result[data-kind="success"] {
+  color: #124f40;
+  background: #def3eb;
+}
+
+.result[data-kind="error"] {
+  color: #821f2a;
+  background: #fbecef;
+}

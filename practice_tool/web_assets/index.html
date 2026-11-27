@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>实习签到助手</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>实习签到助手</h1>
+      </header>
+
+      <div class="panels">
+        <section aria-labelledby="location-heading">
+          <h2 id="location-heading">设备定位</h2>
+          <p class="hint">授权后，当前位置会发送到 PracticeTool，用于浏览器定位检查。</p>
+          <button id="locate" type="button">检查浏览器定位</button>
+          <p id="location-result" class="result" role="status" hidden></p>
+        </section>
+
+        <section aria-labelledby="status-heading">
+          <h2 id="status-heading">签到与查询</h2>
+          <p class="hint">签到时会获取设备当前位置，并通过实习平台接口提交。</p>
+          <form id="status-form" method="post" action="/api/status">
+            <label for="username">实习账号</label>
+            <input id="username" name="username" autocomplete="username" required>
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+            <button id="query-status" type="submit">查询签到状态</button>
+            <button id="check-in" type="submit">使用当前位置签到</button>
+          </form>
+          <p id="status-result" class="result" role="status" hidden></p>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
