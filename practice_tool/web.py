@@ -19,7 +19,8 @@ from .secrets import SecretError
 
 _ASSET_DIR = Path(__file__).with_name("web_assets")
 _ASSETS = {
-    "/quick": ("index.html", "text/html; charset=utf-8"),
+    "/simulate-location": ("simulate-location.html", "text/html; charset=utf-8"),
+    "/simulate-location.js": ("simulate-location.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -68,7 +69,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, error="页面不存在。")
             return
 
-        self._send(HTTPStatus.OK, content_type, (_ASSET_DIR / filename).read_bytes())
+        self._send(
+            HTTPStatus.OK, content_type, (_ASSET_DIR / filename).read_bytes(),
+            static_simulation=path == "/simulate-location",
+        )
 
     def do_POST(self) -> None:
         if not self._same_origin():
@@ -222,7 +226,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self._send(status, "application/json; charset=utf-8", body)
 
-    def _send(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
+    def _send(self, status: HTTPStatus, content_type: str, body: bytes, *, static_simulation: bool = False) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -231,7 +235,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "geolocation=(self)")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+            + ("connect-src 'none'; form-action 'none'" if static_simulation else "form-action 'self'"),
         )
         self.end_headers()
         self.wfile.write(body)

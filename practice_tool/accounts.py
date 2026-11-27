@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from .client import PracticeClient, PracticeError, SessionExpired
-from .location import LocationError, device_position
+from .location import LocationError, device_position, distance_metres
 from .secrets import SecretError, seal, unseal
 
 
@@ -32,7 +33,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     session BLOB,
     enabled INTEGER NOT NULL,
     check_time TEXT NOT NULL,
-    weekdays_only INTEGER NOT NULL
+    weekdays_only INTEGER NOT NULL,
+    check_location TEXT
 );
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,12 +74,31 @@ def _schedule_due(account: sqlite3.Row, now: datetime) -> bool:
     )
 
 
+def _encode_location(location: object) -> Optional[str]:
+    if location is None:
+        return None
+    if not isinstance(location, dict):
+        raise DashboardError("请填写有效的实习地点。")
+    latitude, longitude, radius = (location.get(key) for key in ("latitude", "longitude", "radius"))
+    if (
+        type(latitude) not in (int, float) or not -90 <= latitude <= 90
+        or type(longitude) not in (int, float) or not -180 <= longitude <= 180
+        or type(radius) not in (int, float) or not 0 < radius < math.inf
+    ):
+        raise DashboardError("请输入有效的 WGS-84 经纬度和大于 0 米的范围。")
+    return json.dumps({"latitude": latitude, "longitude": longitude, "radius": radius})
+
+
 class Accounts:
     def __init__(self, directory: Path):
         self._path = directory / "practice.sqlite3"
         directory.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.executescript(_SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
+            columns = {column["name"] for column in db.execute("PRAGMA table_info(accounts)")}
+            if "check_location" not in columns:
+                db.execute("ALTER TABLE accounts ADD COLUMN check_location TEXT")
         self._stop = threading.Event()
         self._executor = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="practice-check-in")
         self._scheduler = threading.Thread(target=self._schedule, name="practice-scheduler", daemon=True)
@@ -115,7 +136,7 @@ class Accounts:
         with self._db() as db:
             self._expire_runs(db, now)
             accounts = db.execute(
-                """SELECT a.id, a.name, a.username, a.enabled, a.check_time, a.weekdays_only,
+                """SELECT a.id, a.name, a.username, a.enabled, a.check_time, a.weekdays_only, a.check_location,
                           a.session IS NOT NULL AS has_session, r.state, r.message, r.started_at, r.finished_at,
                           EXISTS(SELECT 1 FROM runs AS t WHERE t.account_id = a.id AND t.day = ?
                                  AND t.state IN ('signed', 'already_signed')) AS signed_today
@@ -128,7 +149,11 @@ class Accounts:
                    FROM runs AS r JOIN accounts AS a ON a.id = r.account_id
                    ORDER BY r.id DESC LIMIT 100"""
             ).fetchall()
-        return {"accounts": [dict(row) for row in accounts], "runs": [dict(row) for row in runs],
+        account_details = [dict(row) for row in accounts]
+        for account in account_details:
+            if account["check_location"] is not None:
+                account["check_location"] = json.loads(account["check_location"])
+        return {"accounts": account_details, "runs": [dict(row) for row in runs],
                 "today": day, "scheduler": self._scheduler.is_alive()}
 
     @staticmethod
@@ -159,6 +184,7 @@ class Accounts:
         if not isinstance(check_time, str) or not _TIME.fullmatch(check_time) or type(enabled) is not bool or type(weekdays_only) is not bool:
             raise DashboardError("请填写有效的签到时间和执行频率。")
 
+        location = _encode_location(data.get("check_location"))
         username = username.strip()
         name = name.strip()
         secret = seal(password.encode()) if password else None
@@ -167,19 +193,21 @@ class Accounts:
                 db.execute("BEGIN IMMEDIATE")
                 if account_id is None:
                     return db.execute(
-                        """INSERT INTO accounts (name, username, password, enabled, check_time, weekdays_only)
-                           VALUES (?, ?, ?, ?, ?, ?)""", (name, username, secret, enabled, check_time, weekdays_only),
+                        """INSERT INTO accounts (name, username, password, enabled, check_time, weekdays_only, check_location)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""", (name, username, secret, enabled, check_time, weekdays_only, location),
                     ).lastrowid
                 self._expire_runs(db, datetime.now(BEIJING))
                 account = self._account(db, account_id)
                 self._require_idle(db, account_id)
                 if username != account["username"]:
                     raise DashboardError("已有账号的登录名固定。请添加另一个实习账号。")
+                if "check_location" not in data:
+                    location = account["check_location"]
                 db.execute(
                     """UPDATE accounts SET name = ?, username = ?, password = ?, session = ?,
-                           enabled = ?, check_time = ?, weekdays_only = ? WHERE id = ?""",
+                           enabled = ?, check_time = ?, weekdays_only = ?, check_location = ? WHERE id = ?""",
                     (name, username, secret or account["password"], None if secret else account["session"],
-                     enabled, check_time, weekdays_only, account_id),
+                     enabled, check_time, weekdays_only, location, account_id),
                 )
         except sqlite3.IntegrityError:
             raise DashboardError("这个实习账号已经添加。", HTTPStatus.CONFLICT) from None
@@ -261,6 +289,15 @@ class Accounts:
             client.login(account["username"], password)
             return client.signed_today()
 
+        def locate() -> tuple[float, float]:
+            current = device_position()
+            if account["check_location"] is not None:
+                site = json.loads(account["check_location"])
+                distance = distance_metres(current, (site["latitude"], site["longitude"]))
+                if distance > site["radius"]:
+                    raise LocationError("设备当前位置超出此账号设置的实习地点范围。")
+            return current
+
         try:
             if account["session"]:
                 try:
@@ -280,7 +317,7 @@ class Accounts:
                 state, message = "unsigned", "平台显示今天尚未签到。"
             else:
                 try:
-                    client.check_in(device_position, known_status=signed)
+                    client.check_in(locate, known_status=signed)
                     state, message = "signed", "平台已确认签到成功。"
                 except SessionExpired:
                     if password:
@@ -288,7 +325,7 @@ class Accounts:
                     if renew():
                         state, message = "already_signed", "平台显示今天已经签到。"
                     else:
-                        client.check_in(device_position, known_status=False)
+                        client.check_in(locate, known_status=False)
                         state, message = "signed", "平台已确认签到成功。"
         except (PracticeError, LocationError, SecretError, ValueError) as error:
             state, message = "failed", str(error)

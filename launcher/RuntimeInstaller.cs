@@ -109,17 +109,21 @@ namespace PracticeToolLauncher
             AppDirectory = Path.Combine(managed, "app-" + appHash.Substring(0, 16));
         }
 
-        internal static RuntimeInstaller Create()
+        internal static string DefaultDataDirectory()
         {
             string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify);
             if (!Path.IsPathRooted(local)) throw new IOException("Windows 未返回当前用户的应用数据目录。");
-            var directory = Path.Combine(local, "PracticeTool");
+            return Path.Combine(local, "PracticeTool");
+        }
+
+        internal static RuntimeInstaller Create()
+        {
             using (Stream embedded = Assembly.GetExecutingAssembly().GetManifestResourceStream("PracticeTool.service.zip"))
             using (var contents = new MemoryStream())
             {
                 if (embedded == null) throw new InvalidOperationException("启动器缺少内置服务文件。");
                 embedded.CopyTo(contents);
-                return new RuntimeInstaller(directory, RuntimePackage.ForWindows(), contents.ToArray());
+                return new RuntimeInstaller(DefaultDataDirectory(), RuntimePackage.ForWindows(), contents.ToArray());
             }
         }
 

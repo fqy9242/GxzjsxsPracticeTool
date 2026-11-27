@@ -8,22 +8,16 @@
     <script src="/dashboard.js" defer></script>
   </head>
   <body>
-    <aside class="sidebar">
-      <a class="brand" href="/" aria-label="PracticeTool 首页">
-        <span class="brand-mark" aria-hidden="true">P</span>
-        <span>PracticeTool</span>
-      </a>
+    <header class="topbar">
+      <a class="brand" href="/">PracticeTool</a>
       <nav aria-label="主导航">
         <button type="button" data-view="accounts" aria-current="page">账号管理</button>
-        <button type="button" data-view="history">执行记录</button>
+        <button type="button" data-view="history">调度中心</button>
+        <a href="/simulate-location">位置模拟</a>
       </nav>
-      <a class="quick-link" href="/quick">单次签到 <span aria-hidden="true">↗</span></a>
-    </aside>
+      <a class="repository-link" href="https://github.com/fqy9242/GxzjsxsPracticeTool" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </header>
     <main>
-      <header class="topbar">
-        <span>实习签到</span>
-        <span id="service" class="pill" data-tone="muted">连接中</span>
-      </header>
       <div class="content">
         <div class="page-header">
           <div>
@@ -36,9 +30,10 @@
 
         <section id="accounts-view" aria-labelledby="page-title">
           <div class="metrics" aria-label="账号概览">
-            <div><span>管理账号</span><strong id="total-count">—</strong></div>
-            <div><span>启用自动签到</span><strong id="scheduled-count">—</strong></div>
-            <div><span>今日已确认签到</span><strong id="signed-count">—</strong></div>
+            <span>账号 <strong id="total-count">—</strong></span>
+            <span>启用计划 <strong id="scheduled-count">—</strong></span>
+            <span>今日已签到 <strong id="signed-count">—</strong></span>
+            <span id="service" class="pill" data-tone="muted">连接中</span>
           </div>
           <div class="panel">
             <div class="table-scroll" tabindex="0" aria-label="账号列表">
@@ -57,7 +52,7 @@
 
         <section id="history-view" aria-labelledby="page-title" hidden>
           <div class="panel">
-            <div class="table-scroll" tabindex="0" aria-label="签到执行记录">
+            <div class="table-scroll" tabindex="0" aria-label="调度记录">
               <table>
                 <thead><tr><th scope="col">时间</th><th scope="col">账号</th><th scope="col">操作</th><th scope="col">结果</th><th scope="col">平台回执</th></tr></thead>
                 <tbody id="runs"></tbody>
@@ -84,6 +79,19 @@
         <input id="account-username" name="username" autocomplete="username" maxlength="100" required>
         <label for="account-password">密码</label>
         <input id="account-password" name="password" type="password" autocomplete="new-password" maxlength="500" required>
+        <label for="location-mode">签到位置</label>
+        <select id="location-mode" name="location_mode">
+          <option value="current">使用设备当前位置</option>
+          <option value="site">指定实习地点</option>
+        </select>
+        <div id="location-fields" class="location-fields" hidden>
+          <p class="field-hint">填写实习地点的 WGS-84 坐标。签到时会核验设备是否位于此范围内。</p>
+          <div class="coordinate-pair">
+            <div><label for="site-latitude">纬度</label><input id="site-latitude" name="site_latitude" type="number" min="-90" max="90" step="any" required disabled></div>
+            <div><label for="site-longitude">经度</label><input id="site-longitude" name="site_longitude" type="number" min="-180" max="180" step="any" required disabled></div>
+          </div>
+          <div><label for="site-radius">范围（米）</label><input id="site-radius" name="site_radius" type="number" min="0" step="any" value="100" required disabled></div>
+        </div>
         <div class="schedule">
           <label class="check-option"><input type="checkbox" name="enabled" id="schedule-enabled"> 启用自动签到</label>
           <div class="schedule-fields" id="schedule-fields">

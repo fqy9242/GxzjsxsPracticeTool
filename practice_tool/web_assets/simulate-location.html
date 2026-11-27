@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>位置模拟 · PracticeTool</title>
+    <link rel="stylesheet" href="/dashboard.css">
+    <script src="/simulate-location.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">PracticeTool</a>
+      <nav aria-label="主导航">
+        <a href="/">账号管理</a>
+        <a href="/simulate-location" aria-current="page">位置模拟</a>
+      </nav>
+      <a class="repository-link" href="https://github.com/fqy9242/GxzjsxsPracticeTool" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </header>
+    <main>
+      <div class="content">
+        <div class="page-header">
+          <div>
+            <h1>位置模拟</h1>
+            <p>输入两个测试点，查看距离和范围判断。两组经纬度请使用同一坐标系。</p>
+          </div>
+        </div>
+        <form id="simulation-form" class="panel simulation-form">
+          <fieldset>
+            <legend>参考点</legend>
+            <div class="coordinate-pair">
+              <div><label for="reference-latitude">纬度</label><input id="reference-latitude" name="reference_latitude" type="number" min="-90" max="90" step="any" value="24" required></div>
+              <div><label for="reference-longitude">经度</label><input id="reference-longitude" name="reference_longitude" type="number" min="-180" max="180" step="any" value="108" required></div>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>模拟位置</legend>
+            <div class="coordinate-pair">
+              <div><label for="point-latitude">纬度</label><input id="point-latitude" name="point_latitude" type="number" min="-90" max="90" step="any" value="24.0005" required></div>
+              <div><label for="point-longitude">经度</label><input id="point-longitude" name="point_longitude" type="number" min="-180" max="180" step="any" value="108" required></div>
+            </div>
+          </fieldset>
+          <div class="simulation-radius">
+            <label for="radius">测试范围（米）</label>
+            <input id="radius" name="radius" type="number" min="0" step="any" value="100" required>
+          </div>
+          <button type="submit" class="button primary">计算距离</button>
+          <output id="simulation-result" class="simulation-result" aria-live="polite" hidden></output>
+        </form>
+        <p class="footnote">模拟结果仅供本地测试。手动和定时签到使用设备的实际定位。</p>
+      </div>
+    </main>
+  </body>
+</html>

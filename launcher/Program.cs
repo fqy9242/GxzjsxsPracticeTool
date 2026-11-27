@@ -3,6 +3,7 @@ using System.Net;
 using System.Reflection;
 using System.Security.Principal;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("PracticeTool")]
@@ -16,10 +17,9 @@ namespace PracticeToolLauncher
     internal static class Program
     {
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
+            bool startup = args.Length == 1 && args[0] == StartupRegistration.Argument;
             ServicePointManager.SecurityProtocol = SecurityProtocolType.SystemDefault;
             string user;
             using (var identity = WindowsIdentity.GetCurrent()) user = identity.User.Value;
@@ -28,16 +28,39 @@ namespace PracticeToolLauncher
             {
                 if (!first)
                 {
-                    MessageBox.Show("PracticeTool 启动器已经打开。", "PracticeTool", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    if (!startup)
+                        MessageBox.Show("PracticeTool 启动器正在运行。", "PracticeTool", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
 
+                if (startup)
+                {
+                    StartInBackgroundAsync().GetAwaiter().GetResult();
+                    return;
+                }
+
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
                 try { Application.Run(new LauncherForm(RuntimeInstaller.Create())); }
                 catch (Exception error)
                 {
                     MessageBox.Show(error.Message, "PracticeTool 无法启动", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
+        }
+
+        private static async Task StartInBackgroundAsync()
+        {
+            try
+            {
+                var installer = RuntimeInstaller.Create();
+                using (var running = ServiceProcess.Find(installer))
+                    if (running != null) return;
+
+                await installer.PrepareAsync(new Progress<InstallProgress>(), CancellationToken.None);
+                using (await ServiceProcess.StartAsync(installer, ServiceProcess.DefaultPort)) { }
+            }
+            catch (Exception error) { ServiceProcess.LogStartupFailure(error); }
         }
     }
 }

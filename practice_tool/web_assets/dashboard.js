@@ -150,12 +150,18 @@ function setView(view) {
   byId("accounts-view").hidden = history;
   byId("history-view").hidden = !history;
   byId("add-account").hidden = history;
-  byId("page-title").textContent = history ? "执行记录" : "账号管理";
+  byId("page-title").textContent = history ? "调度中心" : "账号管理";
   byId("page-description").textContent = history ? "查看最近 100 条执行结果 · 北京时间" : "管理实习账号和每日自动签到计划。";
   for (const button of document.querySelectorAll("[data-view]")) {
     if (button.dataset.view === view) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
+}
+
+function updateLocationFields() {
+  const showSite = fields.location_mode.value === "site";
+  byId("location-fields").hidden = !showSite;
+  fields.site_latitude.disabled = fields.site_longitude.disabled = fields.site_radius.disabled = !showSite;
 }
 
 function openEditor(account = null) {
@@ -168,6 +174,12 @@ function openEditor(account = null) {
   fields.username.readOnly = Boolean(account);
   fields.password.placeholder = account ? "留空保留原密码" : "";
   fields.password.required = !account;
+  const site = account?.check_location;
+  fields.location_mode.value = site ? "site" : "current";
+  fields.site_latitude.value = site?.latitude ?? "";
+  fields.site_longitude.value = site?.longitude ?? "";
+  fields.site_radius.value = site?.radius ?? 100;
+  updateLocationFields();
   fields.enabled.checked = Boolean(account?.enabled);
   fields.check_time.value = account?.check_time || "09:00";
   fields.weekdays_only.value = account?.weekdays_only === 0 ? "false" : "true";
@@ -187,7 +199,7 @@ async function runAccount(id, action) {
   renderAccounts();
   try {
     await request("/api/accounts/run", { id, action });
-    notify(action === "status" ? "已发起状态查询，可在执行记录查看结果。" : "已发起签到，可在执行记录查看回执。");
+    notify(action === "status" ? "已发起状态查询，可在调度中心查看结果。" : "已发起签到，可在调度中心查看回执。");
     await refresh();
   } catch (error) {
     notify(error.message, "warning");
@@ -203,6 +215,7 @@ for (const button of document.querySelectorAll("[data-view]")) {
 byId("add-account").addEventListener("click", () => openEditor());
 byId("close-dialog").addEventListener("click", () => dialog.close());
 byId("cancel-dialog").addEventListener("click", () => dialog.close());
+fields.location_mode.addEventListener("change", updateLocationFields);
 dialog.addEventListener("close", () => { fields.password.value = ""; });
 
 form.addEventListener("submit", async (event) => {
@@ -216,6 +229,11 @@ form.addEventListener("submit", async (event) => {
       name: fields.name.value,
       username: fields.username.value,
       password: fields.password.value,
+      check_location: fields.location_mode.value === "site" ? {
+        latitude: fields.site_latitude.valueAsNumber,
+        longitude: fields.site_longitude.valueAsNumber,
+        radius: fields.site_radius.valueAsNumber,
+      } : null,
       enabled: fields.enabled.checked,
       check_time: fields.check_time.value,
       weekdays_only: fields.weekdays_only.value === "true",
