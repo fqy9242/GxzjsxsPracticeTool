@@ -19,8 +19,10 @@ from .secrets import SecretError, seal, unseal
 
 
 BEIJING = timezone(timedelta(hours=8))
+logger = logging.getLogger(__name__)
 _TIME = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d", re.ASCII)
 _WORKERS = 3
+_SOURCE_NAMES = {"manual": "手动签到", "automatic": "自动签到", "status": "查询状态"}
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -225,7 +227,7 @@ class Accounts:
             try:
                 self._schedule_due()
             except sqlite3.Error:
-                logging.exception("无法读取签到计划")
+                logger.exception("无法读取签到计划。")
             self._stop.wait(10)
 
     def _schedule_due(self) -> None:
@@ -247,6 +249,8 @@ class Accounts:
                     continue
 
     def _execute(self, run_id: int, account: sqlite3.Row, source: str) -> None:
+        heading = f"{' '.join(account['name'].split())} · {_SOURCE_NAMES[source]}"
+        logger.info("%s · 开始执行", heading)
         client = PracticeClient()
         password = ""
         session = None
@@ -292,14 +296,20 @@ class Accounts:
                 message = message.replace(password, "••••")
         except Exception:
             state, message = "failed", "执行时发生内部错误。"
-            logging.exception("账号签到执行异常")
+            logger.exception("账号签到执行异常。")
 
         try:
             if client.has_session:
                 session = seal(json.dumps(client.export_session(), ensure_ascii=False).encode())
         except SecretError:
             message += " 登录会话未能保存。"
-        self._finish(run_id, account["id"], state, message, session)
+        try:
+            self._finish(run_id, account["id"], state, message, session)
+        except sqlite3.Error:
+            logger.exception("%s · 无法保存执行记录。", heading)
+        else:
+            level = logging.WARNING if state == "failed" else logging.INFO
+            logger.log(level, "%s · %s", heading, message)
 
     def _finish(self, run_id: int, account_id: int, state: str, message: str, session: Optional[bytes]) -> None:
         finished = _timestamp(datetime.now(BEIJING))

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $project 'dist'
+$dist = Join-Path $project 'dist\windows'
 $work = Join-Path $project 'build'
 $assets = (Join-Path $project 'practice_tool\web_assets') + ';practice_tool/web_assets'
 $entry = Join-Path $project 'practice_tool\launcher.py'

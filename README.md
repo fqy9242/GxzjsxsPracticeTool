@@ -6,6 +6,8 @@
 
 双击 `PracticeTool.exe`，点击「启动服务」和「打开 Web 首页」。启动器包含 Python 运行环境，也可以从项目目录运行 `python -m practice_tool web`，然后打开 [本机管理台](http://127.0.0.1:8765/)。
 
+启动器下方实时显示服务和账号执行日志，可点击「复制日志」排查。账号历史回执可在管理台的「执行记录」查看。
+
 1. 点击「添加账号」，填写显示名称、实习账号和密码。需要自动签到时，开启计划并选择执行时间与频率。
 2. 点击账号旁的「查询」核对今日状态，或在现场点击「签到」发起一次签到。
 3. 在「执行记录」查看平台回执。账号设置、会话和执行记录会保留在本机。
@@ -14,7 +16,7 @@
 
 平台返回的 Cookie 和 Token 按账号缓存。会话失效后，服务使用已保存的密码重登。密码与会话由 Windows 当前用户的 DPAPI 加密，默认数据位于 `%LOCALAPPDATA%\PracticeTool`。多账号管理台仅在本机开放。
 
-如需从源码构建 Windows 启动器，安装 PyInstaller 6 后，在项目目录运行 `.\tools\build-launcher.ps1`。输出位于 `dist\PracticeTool.exe`。
+如需从源码构建 Windows 启动器，安装 PyInstaller 6 后，在项目目录运行 `.\tools\build-launcher.ps1`。输出位于 `dist\windows\PracticeTool.exe`。
 
 ## 登录与查询
 

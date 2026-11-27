@@ -1,12 +1,15 @@
 """Windows 图形启动器。"""
 
 import ctypes
+import logging
 import queue
 import threading
 import tkinter as tk
 import webbrowser
-from tkinter import ttk
+from datetime import datetime
+from tkinter import scrolledtext, ttk
 
+from practice_tool.accounts import BEIJING
 from practice_tool.web import WebError, open_web_server
 
 
@@ -20,6 +23,15 @@ MUTED = "#596980"
 BLUE = "#2457d5"
 
 
+class _LogHandler(logging.Handler):
+    def __init__(self, events):
+        super().__init__(logging.INFO)
+        self.events = events
+
+    def emit(self, record) -> None:
+        self.events.put(("log", (record.created, record.getMessage(), record.levelno >= logging.WARNING)))
+
+
 class Launcher:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -30,7 +42,7 @@ class Launcher:
 
         root.title("PracticeTool · 签到服务")
         root.configure(background=BG)
-        root.resizable(False, False)
+        root.minsize(530, 420)
         root.protocol("WM_DELETE_WINDOW", self._close)
         self._style()
 
@@ -67,10 +79,29 @@ class Launcher:
         self.open.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._label(container, "自动签到在服务运行期间执行。", ("Segoe UI", 9), BG, MUTED).pack(anchor="w", pady=(14, 0))
 
+        log_header = ttk.Frame(container, style="Launcher.TFrame")
+        log_header.pack(fill="x", pady=(14, 6))
+        self._label(log_header, "运行日志 · 北京时间", ("Segoe UI", 11, "bold"), BG).pack(side="left")
+        ttk.Button(log_header, text="复制日志", command=self._copy_logs).pack(side="right")
+        self.logs = scrolledtext.ScrolledText(
+            container, width=45, height=10, wrap="word", font=("Consolas", 10),
+            background=PANEL, foreground=TEXT, borderwidth=0, padx=11, pady=9,
+            highlightthickness=1, highlightbackground="#dce5f1", state="disabled",
+        )
+        self.logs.tag_configure("time", foreground=MUTED)
+        self.logs.tag_configure("warning", foreground="#a33d37")
+        self.logs.pack(fill="both", expand=True)
+        self.logger = logging.getLogger("practice_tool.accounts")
+        self.previous_log_level = self.logger.level
+        self.logger.setLevel(logging.INFO)
+        self.log_handler = _LogHandler(self.events)
+        self.logger.addHandler(self.log_handler)
+        self._write_log("启动器已就绪。")
+
         self._set_phase("stopped")
         root.update_idletasks()
-        width = max(root.winfo_reqwidth(), 465)
-        height = max(root.winfo_reqheight(), 315)
+        width = max(root.winfo_reqwidth(), 580)
+        height = max(root.winfo_reqheight(), 525)
         x = max(0, (root.winfo_screenwidth() - width) // 2)
         y = max(0, (root.winfo_screenheight() - height) // 2)
         root.geometry(f"{width}x{height}+{x}+{y}")
@@ -115,6 +146,7 @@ class Launcher:
             self._stop()
         elif self.phase in ("stopped", "failed"):
             self._set_phase("starting")
+            self._write_log("正在启动签到服务。")
             threading.Thread(target=self._serve, name="practice-web").start()
 
     def _serve(self) -> None:
@@ -134,6 +166,7 @@ class Launcher:
 
     def _stop(self) -> None:
         self._set_phase("stopping")
+        self._write_log("正在停止服务，等待执行中的任务结束。")
         self.server.accounts.stop_scheduling()
         threading.Thread(target=self.server.shutdown, name="practice-web-stop").start()
 
@@ -141,16 +174,21 @@ class Launcher:
         try:
             while True:
                 phase, value = self.events.get_nowait()
-                if phase == "running":
+                if phase == "log":
+                    timestamp, message, warning = value
+                    self._write_log(message, warning=warning, timestamp=timestamp)
+                elif phase == "running":
                     self.server = value
+                    self._write_log(f"服务已启动。{URL}")
                     if self.closing:
                         self._stop()
                     else:
                         self._set_phase(phase)
                 else:
                     self.server = None
+                    self._write_log(value or "服务已停止。", warning=phase == "failed")
                     if self.closing:
-                        self.root.destroy()
+                        self._destroy()
                         return
                     self._set_phase(phase, value or "")
         except queue.Empty:
@@ -158,12 +196,38 @@ class Launcher:
         self.root.after(100, self._poll)
 
     def _open(self) -> None:
-        if not webbrowser.open_new_tab(URL):
+        if webbrowser.open_new_tab(URL):
+            self._write_log("已打开 Web 首页。")
+        else:
             self.description.configure(text=f"请在浏览器地址栏打开 {URL}")
+            self._write_log("无法自动打开浏览器。", warning=True)
+
+    def _write_log(self, message: str, *, warning: bool = False, timestamp=None) -> None:
+        at = datetime.now(BEIJING) if timestamp is None else datetime.fromtimestamp(timestamp, BEIJING)
+        at_bottom = self.logs.yview()[1] >= 0.99
+        self.logs.configure(state="normal")
+        self.logs.insert("end", f"[{at:%H:%M:%S}]  ", "time")
+        self.logs.insert("end", " ".join(message.splitlines()) + "\n", "warning" if warning else "")
+        line_count = int(self.logs.index("end-1c").split(".")[0]) - 1
+        if line_count > 300:
+            self.logs.delete("1.0", f"{line_count - 299}.0")
+        self.logs.configure(state="disabled")
+        if at_bottom:
+            self.logs.see("end")
+
+    def _copy_logs(self) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.logs.get("1.0", "end-1c"))
+        self._write_log("已复制日志。")
+
+    def _destroy(self) -> None:
+        self.logger.removeHandler(self.log_handler)
+        self.logger.setLevel(self.previous_log_level)
+        self.root.destroy()
 
     def _close(self) -> None:
         if self.phase in ("stopped", "failed"):
-            self.root.destroy()
+            self._destroy()
             return
         self.closing = True
         if self.phase == "running":
