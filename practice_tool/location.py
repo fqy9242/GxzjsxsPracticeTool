@@ -4,6 +4,7 @@ import json
 import math
 import subprocess
 import sys
+from typing import Optional
 
 
 class LocationError(RuntimeError):
@@ -21,8 +22,15 @@ try {
         $position = $watcher.Position
         if ($position -and -not $position.Location.IsUnknown -and
             $position.Timestamp -ge [DateTimeOffset]::UtcNow.AddSeconds(-30)) {
-            @{ latitude = $position.Location.Latitude; longitude = $position.Location.Longitude } |
-                ConvertTo-Json -Compress
+            $accuracy = $position.Location.HorizontalAccuracy
+            if ([double]::IsNaN($accuracy) -or [double]::IsInfinity($accuracy) -or $accuracy -le 0) {
+                $accuracy = $null
+            }
+            @{
+                latitude = $position.Location.Latitude
+                longitude = $position.Location.Longitude
+                accuracy = $accuracy
+            } | ConvertTo-Json -Compress
             exit 0
         }
         if ($watcher.Permission -eq 'Denied') { exit 1 }
@@ -35,8 +43,8 @@ try {
 """
 
 
-def device_position() -> tuple[float, float]:
-    """获取现场电脑当前的 WGS‑84 经纬度。"""
+def device_fix() -> tuple[float, float, Optional[float]]:
+    """获取 Windows 的 WGS‑84 经纬度及水平定位精度（米）。"""
     if sys.platform != "win32":
         raise LocationError("命令行定位需要 Windows。也可以在现场设备的 PracticeTool 网页中签到。")
 
@@ -47,9 +55,24 @@ def device_position() -> tuple[float, float]:
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         position = json.loads(result.stdout)
-        return position["latitude"], position["longitude"]
+        latitude, longitude = position["latitude"], position["longitude"]
+        if not (
+            type(latitude) in (int, float) and -90 <= latitude <= 90
+            and type(longitude) in (int, float) and -180 <= longitude <= 180
+        ):
+            raise ValueError("Invalid coordinates")
+        accuracy = position.get("accuracy")
+        if type(accuracy) not in (int, float) or not 0 < accuracy < math.inf:
+            accuracy = None
+        return latitude, longitude, accuracy
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError):
         raise LocationError("Windows 未返回当前位置。请检查系统定位和桌面应用定位权限。") from None
+
+
+def device_position() -> tuple[float, float]:
+    """获取现场电脑当前的 WGS‑84 经纬度。"""
+    latitude, longitude, _ = device_fix()
+    return latitude, longitude
 
 
 def gcj02(latitude: float, longitude: float) -> tuple[float, float]:

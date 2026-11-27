@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from .client import PracticeClient, PracticeError, SessionExpired
-from .location import LocationError, device_position, distance_metres
+from .location import LocationError, device_position
 from .mail import mailbox, send_reminder
 from .secrets import SecretError, seal, unseal
 
@@ -361,13 +361,10 @@ class Accounts:
             return client.signed_today()
 
         def locate() -> tuple[float, float]:
-            current = device_position()
             if account["check_location"] is not None:
                 site = json.loads(account["check_location"])
-                distance = distance_metres(current, (site["latitude"], site["longitude"]))
-                if distance > site["radius"]:
-                    raise LocationError("设备当前位置超出此账号设置的实习地点范围。")
-            return current
+                return site["latitude"], site["longitude"]
+            return device_position()
 
         try:
             if account["session"]:

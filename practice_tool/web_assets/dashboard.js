@@ -10,6 +10,9 @@ const fields = form.elements;
 const formError = byId("form-error");
 const deleteButton = byId("delete-account");
 const saveButton = byId("save-account");
+const previewLocationButton = byId("preview-location");
+const useLocationButton = byId("use-location");
+const locationPreviewResult = byId("location-preview-result");
 const mailDialog = byId("mail-dialog");
 const mailForm = byId("mail-form");
 const mailFields = mailForm.elements;
@@ -20,9 +23,7 @@ const navLinks = document.querySelectorAll("[data-view]");
 const views = {
   accounts: ["账号管理", "管理实习账号和每日自动签到计划。"],
   history: ["调度中心", "查看最近 100 条执行结果 · 北京时间"],
-  simulation: ["位置模拟", "输入两个测试点计算距离。两组经纬度请使用同一坐标系。"],
 };
-const localDashboard = ["127.0.0.1", "localhost"].includes(location.hostname);
 const busyAccounts = new Set();
 const results = {
   running: ["执行中", "active"],
@@ -42,6 +43,8 @@ let activeView = "accounts";
 let editing = null;
 let refreshing = null;
 let snapshot = "";
+let currentLocation = null;
+let locationPreviewRequest = null;
 
 function element(tag, text = "", className = "") {
   const node = document.createElement(tag);
@@ -146,7 +149,7 @@ function renderAccounts() {
 }
 
 function refresh() {
-  if (activeView !== "simulation" && !refreshing) {
+  if (!refreshing) {
     refreshing = request("/api/dashboard").then((next) => {
       const key = JSON.stringify(next);
       data = next;
@@ -194,6 +197,46 @@ function updateLocationFields() {
   fields.site_latitude.disabled = fields.site_longitude.disabled = fields.site_radius.disabled = !showSite;
 }
 
+function resetLocationPreview() {
+  currentLocation = null;
+  locationPreviewRequest = null;
+  previewLocationButton.disabled = false;
+  useLocationButton.hidden = true;
+  locationPreviewResult.hidden = true;
+}
+
+function distanceMetres(fromLat, fromLng, toLat, toLng) {
+  const toRadians = Math.PI / 180;
+  const firstLatitude = fromLat * toRadians;
+  const secondLatitude = toLat * toRadians;
+  const deltaLatitude = (toLat - fromLat) * toRadians;
+  const deltaLongitude = (toLng - fromLng) * toRadians;
+  const chord = Math.sin(deltaLatitude / 2) ** 2
+    + Math.cos(firstLatitude) * Math.cos(secondLatitude) * Math.sin(deltaLongitude / 2) ** 2;
+  const earthRadiusMetres = 6378137;
+  return Math.round(2 * earthRadiusMetres * Math.asin(Math.sqrt(Math.min(1, chord))) * 1e4) / 1e4;
+}
+
+function renderLocationPreview() {
+  if (!currentLocation) return;
+  const { latitude, longitude, accuracy } = currentLocation;
+  const details = [`纬度 ${latitude.toFixed(6)} · 经度 ${longitude.toFixed(6)}`];
+  details.push(accuracy === null ? "Windows 未报告定位精度。" : `定位误差半径约 ${Math.ceil(accuracy)} 米。`);
+  const siteLat = fields.site_latitude.valueAsNumber;
+  const siteLng = fields.site_longitude.valueAsNumber;
+  const radius = fields.site_radius.valueAsNumber;
+  if (fields.site_latitude.validity.valid && fields.site_longitude.validity.valid
+      && Number.isFinite(siteLat) && Number.isFinite(siteLng) && radius > 0) {
+    const distance = distanceMetres(latitude, longitude, siteLat, siteLng);
+    const status = distance <= radius ? "在范围内" : "超出范围";
+    details.push(`距参考点约 ${distance.toFixed(1)} 米，${status}（${radius} 米）。`);
+    if (accuracy !== null && accuracy > radius) details.push("定位误差半径超过设定范围，结果可能波动。");
+  }
+  locationPreviewResult.textContent = details.join(" ");
+  locationPreviewResult.hidden = false;
+  useLocationButton.hidden = false;
+}
+
 function updateReminderFields() {
   const enabled = fields.reminder_enabled.checked;
   byId("reminder-fields").hidden = !enabled;
@@ -203,6 +246,7 @@ function updateReminderFields() {
 function openEditor(account = null) {
   editing = account;
   form.reset();
+  resetLocationPreview();
   formError.hidden = true;
   byId("dialog-title").textContent = account ? "编辑账号" : "添加账号";
   fields.name.value = account?.name || "";
@@ -249,9 +293,8 @@ async function runAccount(id, action) {
 }
 
 for (const link of navLinks) {
-  if (!localDashboard && link.dataset.view === "history") link.hidden = true;
   link.addEventListener("click", (event) => {
-    if (!localDashboard || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     if (location.pathname !== link.pathname) history.pushState(null, "", link.pathname);
     syncView();
@@ -263,7 +306,43 @@ byId("close-dialog").addEventListener("click", () => dialog.close());
 byId("cancel-dialog").addEventListener("click", () => dialog.close());
 fields.location_mode.addEventListener("change", updateLocationFields);
 fields.reminder_enabled.addEventListener("change", updateReminderFields);
-dialog.addEventListener("close", () => { fields.password.value = ""; });
+dialog.addEventListener("close", () => {
+  fields.password.value = "";
+  resetLocationPreview();
+});
+
+previewLocationButton.addEventListener("click", async () => {
+  resetLocationPreview();
+  previewLocationButton.disabled = true;
+  locationPreviewResult.textContent = "正在读取 Windows 定位…";
+  locationPreviewResult.hidden = false;
+  const pending = request("/api/accounts/location-preview", {});
+  locationPreviewRequest = pending;
+  try {
+    const result = await pending;
+    if (locationPreviewRequest !== pending) return;
+    currentLocation = result;
+    renderLocationPreview();
+  } catch (error) {
+    if (locationPreviewRequest === pending) locationPreviewResult.textContent = error.message;
+  } finally {
+    if (locationPreviewRequest === pending) {
+      locationPreviewRequest = null;
+      previewLocationButton.disabled = false;
+    }
+  }
+});
+
+useLocationButton.addEventListener("click", () => {
+  if (!currentLocation) return;
+  fields.site_latitude.value = currentLocation.latitude;
+  fields.site_longitude.value = currentLocation.longitude;
+  renderLocationPreview();
+});
+
+for (const field of [fields.site_latitude, fields.site_longitude, fields.site_radius]) {
+  field.addEventListener("input", renderLocationPreview);
+}
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

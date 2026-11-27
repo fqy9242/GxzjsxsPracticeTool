@@ -6,7 +6,6 @@
     <title>签到管理 · PracticeTool</title>
     <link rel="stylesheet" href="/dashboard.css">
     <script src="/dashboard.js" defer></script>
-    <script src="/simulate-location.js" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -14,7 +13,6 @@
       <nav aria-label="主导航">
         <a href="/" data-view="accounts">账号管理</a>
         <a href="/schedule" data-view="history">调度中心</a>
-        <a href="/simulate-location" data-view="simulation">位置模拟</a>
       </nav>
       <a class="repository-link" href="https://github.com/fqy9242/GxzjsxsPracticeTool" target="_blank" rel="noopener noreferrer">GitHub</a>
     </header>
@@ -68,32 +66,6 @@
             </div>
           </div>
         </section>
-
-        <section id="simulation-view" aria-labelledby="page-title" hidden>
-          <form id="simulation-form" class="panel simulation-form">
-            <fieldset>
-              <legend>参考点</legend>
-              <div class="coordinate-pair">
-                <div><label for="reference-latitude">纬度</label><input id="reference-latitude" name="reference_latitude" type="number" min="-90" max="90" step="any" value="24" required></div>
-                <div><label for="reference-longitude">经度</label><input id="reference-longitude" name="reference_longitude" type="number" min="-180" max="180" step="any" value="108" required></div>
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>模拟位置</legend>
-              <div class="coordinate-pair">
-                <div><label for="point-latitude">纬度</label><input id="point-latitude" name="point_latitude" type="number" min="-90" max="90" step="any" value="24.0005" required></div>
-                <div><label for="point-longitude">经度</label><input id="point-longitude" name="point_longitude" type="number" min="-180" max="180" step="any" value="108" required></div>
-              </div>
-            </fieldset>
-            <div class="simulation-radius">
-              <label for="radius">测试范围（米）</label>
-              <input id="radius" name="radius" type="number" min="0" step="any" value="100" required>
-            </div>
-            <button id="calculate-distance" class="button primary" type="submit" disabled>计算距离</button>
-            <output id="simulation-result" class="simulation-result" aria-live="polite" hidden></output>
-          </form>
-          <p class="footnote">模拟结果在浏览器内计算。手动和定时签到使用设备的实际定位。</p>
-        </section>
       </div>
     </main>
 
@@ -112,15 +84,20 @@
         <label for="location-mode">签到位置</label>
         <select id="location-mode" name="location_mode">
           <option value="current">使用设备当前位置</option>
-          <option value="site">指定实习地点</option>
+          <option value="site">自定义位置</option>
         </select>
         <div id="location-fields" class="location-fields" hidden>
-          <p class="field-hint">填写实习地点的 WGS-84 坐标。签到时会核验设备是否位于此范围内。</p>
+          <p class="field-hint">填写自定义位置的 WGS-84 坐标。手动和定时签到均使用此坐标提交；参考范围仅用于检测当前位置时对比距离。</p>
           <div class="coordinate-pair">
             <div><label for="site-latitude">纬度</label><input id="site-latitude" name="site_latitude" type="number" min="-90" max="90" step="any" required disabled></div>
             <div><label for="site-longitude">经度</label><input id="site-longitude" name="site_longitude" type="number" min="-180" max="180" step="any" required disabled></div>
           </div>
-          <div><label for="site-radius">范围（米）</label><input id="site-radius" name="site_radius" type="number" min="0" step="any" value="100" required disabled></div>
+          <div><label for="site-radius">参考范围（米）</label><input id="site-radius" name="site_radius" type="number" min="0" step="any" value="100" required disabled></div>
+          <div class="location-actions">
+            <button type="button" id="preview-location" class="button secondary">检测当前位置</button>
+            <button type="button" id="use-location" class="button secondary" hidden>用当前位置填入</button>
+          </div>
+          <p id="location-preview-result" class="field-hint" role="status" hidden></p>
         </div>
         <div class="schedule">
           <label class="check-option"><input type="checkbox" name="enabled" id="schedule-enabled"> 启用自动签到</label>

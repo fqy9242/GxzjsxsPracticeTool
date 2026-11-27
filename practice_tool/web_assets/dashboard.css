@@ -117,19 +117,12 @@ input:not([type="checkbox"]), select {
 .schedule-fields label { margin-bottom: 5px; }
 .location-fields { display: grid; gap: 9px; }
 .location-fields label { margin-bottom: 5px; }
+.location-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .form-error { color: #a2332b; font-size: 13px; overflow-wrap: anywhere; }
 .dialog-actions { margin-top: 10px; }
 .dialog-actions > div { display: flex; gap: 8px; margin-left: auto; }
 
-.simulation-form { max-width: 720px; }
-.simulation-form fieldset { min-width: 0; margin: 4px 0 11px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
-.simulation-form legend { padding: 0 6px; font-size: 14px; font-weight: 650; }
-.simulation-form label { margin-bottom: 5px; }
 .coordinate-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.simulation-radius { max-width: 13rem; }
-.simulation-form .button { justify-self: start; }
-.simulation-result { display: grid; justify-items: start; gap: 8px; margin-top: 8px; padding: 13px; border-radius: 8px; background: #f4f7fb; }
-.simulation-result span + span { color: var(--muted); font-size: 14px; }
 
 @media (max-width: 760px) {
   .page-header { flex-wrap: wrap; }

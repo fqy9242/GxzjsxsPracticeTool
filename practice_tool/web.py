@@ -13,20 +13,20 @@ from typing import Any, Optional
 
 from .accounts import Accounts, DashboardError, default_data_dir
 from .client import PracticeClient, PracticeError
-from .location import LocationError
+from .location import LocationError, device_fix
 from .secrets import SecretError
 
 
 _ASSET_DIR = Path(__file__).with_name("web_assets")
 _ASSETS = {
-    "/simulate-location.js": ("simulate-location.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
     "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
 }
 _MAIL_SETTINGS = "/api/mail-settings"
-_ACCOUNT_ROUTES = {"/api/accounts", "/api/accounts/delete", "/api/accounts/run", _MAIL_SETTINGS}
+_LOCATION_PREVIEW = "/api/accounts/location-preview"
+_ACCOUNT_ROUTES = {"/api/accounts", "/api/accounts/delete", "/api/accounts/run", _MAIL_SETTINGS, _LOCATION_PREVIEW}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 _MAX_BODY_SIZE = 8192
 
@@ -66,7 +66,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             filename = "dashboard.html" if loopback else "index.html"
             content_type = "text/html; charset=utf-8"
-        elif path == "/simulate-location" or (path == "/schedule" and loopback):
+        elif path == "/schedule" and loopback:
             filename = "dashboard.html"
             content_type = "text/html; charset=utf-8"
         elif path in _ASSETS:
@@ -75,10 +75,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, error="页面不存在。")
             return
 
-        self._send(
-            HTTPStatus.OK, content_type, (_ASSET_DIR / filename).read_bytes(),
-            static_simulation=path == "/simulate-location" and not loopback,
-        )
+        self._send(HTTPStatus.OK, content_type, (_ASSET_DIR / filename).read_bytes())
 
     def do_POST(self) -> None:
         if not self._same_origin():
@@ -110,6 +107,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def _manage_account(self, data: dict) -> None:
         accounts = self.server.accounts
         try:
+            if self.path == _LOCATION_PREVIEW:
+                latitude, longitude, accuracy = device_fix()
+                self._send_json(HTTPStatus.OK, latitude=latitude, longitude=longitude, accuracy=accuracy)
+                return
             if self.path == _MAIL_SETTINGS:
                 accounts.save_mail_settings(data)
                 self._send_json(HTTPStatus.OK, configured=True)
@@ -132,6 +133,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.ACCEPTED, id=run_id)
         except DashboardError as error:
             self._send_json(error.status, error=str(error))
+        except LocationError as error:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, error=str(error))
         except SecretError as error:
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error=str(error))
         except sqlite3.Error:
@@ -236,7 +239,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self._send(status, "application/json; charset=utf-8", body)
 
-    def _send(self, status: HTTPStatus, content_type: str, body: bytes, *, static_simulation: bool = False) -> None:
+    def _send(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -245,8 +248,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "geolocation=(self)")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
-            + ("connect-src 'none'; form-action 'none'" if static_simulation else "form-action 'self'"),
+            "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         )
         self.end_headers()
         self.wfile.write(body)
