@@ -5,7 +5,9 @@ import logging
 import math
 import os
 import re
+import secrets
 import sqlite3
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -17,7 +19,8 @@ from typing import Optional
 from .client import PracticeClient, PracticeError, SessionExpired
 from .location import LocationError, device_position
 from .mail import mailbox, send_reminder
-from .secrets import SecretError, seal, unseal
+from .scheduling import CalendarError, HolidayCalendar, SCHEDULE_MODES, TIME_MODES, minute_of_day, minute_text
+from .secrets import SecretError, SecretStore
 
 
 BEIJING = timezone(timedelta(hours=8))
@@ -35,6 +38,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     enabled INTEGER NOT NULL,
     check_time TEXT NOT NULL,
     weekdays_only INTEGER NOT NULL,
+    schedule_mode TEXT NOT NULL DEFAULT 'weekdays',
+    time_mode TEXT NOT NULL DEFAULT 'fixed',
+    check_time_end TEXT NOT NULL DEFAULT '',
     check_location TEXT,
     reminder_enabled INTEGER NOT NULL DEFAULT 0,
     reminder_email TEXT NOT NULL DEFAULT ''
@@ -58,6 +64,13 @@ CREATE TABLE IF NOT EXISTS mail_settings (
     sender TEXT NOT NULL,
     password BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS schedule_targets (
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    target_time TEXT NOT NULL,
+    PRIMARY KEY (account_id, day)
+);
 CREATE UNIQUE INDEX IF NOT EXISTS daily_automatic ON runs(account_id, day) WHERE source = 'automatic';
 CREATE UNIQUE INDEX IF NOT EXISTS active_account ON runs(account_id) WHERE state = 'running';
 CREATE INDEX IF NOT EXISTS account_history ON runs(account_id, id DESC);
@@ -71,6 +84,9 @@ class DashboardError(RuntimeError):
 
 
 def default_data_dir() -> Path:
+    configured = os.environ.get("PRACTICE_DATA_DIR")
+    if configured:
+        return Path(configured).expanduser()
     local = os.environ.get("LOCALAPPDATA")
     return (Path(local) if local else Path.home() / ".local" / "share") / "PracticeTool"
 
@@ -79,10 +95,15 @@ def _timestamp(now: datetime) -> str:
     return now.isoformat(timespec="seconds")
 
 
-def _schedule_due(account: sqlite3.Row, now: datetime) -> bool:
+def _schedule_due(account: sqlite3.Row, now: datetime, calendar: Optional[HolidayCalendar] = None,
+                  target: Optional[str] = None) -> bool:
+    mode = account["schedule_mode"]
+    random_time = account["time_mode"] == "random"
+    if random_time and (target is None or now.strftime("%H:%M") > account["check_time_end"]):
+        return False
     return bool(
-        account["enabled"] and now.strftime("%H:%M") >= account["check_time"]
-        and (not account["weekdays_only"] or now.weekday() < 5)
+        account["enabled"] and now.strftime("%H:%M") >= (target if random_time else account["check_time"])
+        and (calendar or HolidayCalendar()).matches(mode, now.date())
     )
 
 
@@ -105,10 +126,20 @@ class Accounts:
     def __init__(self, directory: Path):
         self._path = directory / "practice.sqlite3"
         directory.mkdir(parents=True, exist_ok=True)
+        self._secrets = SecretStore(directory)
+        self._calendar = HolidayCalendar(directory / "calendar.json")
+        self._calendar_warnings = set()
         with self._db() as db:
             db.executescript(_SCHEMA)
             db.execute("BEGIN IMMEDIATE")
             columns = {column["name"] for column in db.execute("PRAGMA table_info(accounts)")}
+            if "schedule_mode" not in columns:
+                db.execute("ALTER TABLE accounts ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'weekdays'")
+                db.execute("UPDATE accounts SET schedule_mode = CASE WHEN weekdays_only THEN 'weekdays' ELSE 'daily' END")
+            if "time_mode" not in columns:
+                db.execute("ALTER TABLE accounts ADD COLUMN time_mode TEXT NOT NULL DEFAULT 'fixed'")
+            if "check_time_end" not in columns:
+                db.execute("ALTER TABLE accounts ADD COLUMN check_time_end TEXT NOT NULL DEFAULT ''")
             if "check_location" not in columns:
                 db.execute("ALTER TABLE accounts ADD COLUMN check_location TEXT")
             if "reminder_enabled" not in columns:
@@ -155,6 +186,7 @@ class Accounts:
             self._expire_runs(db, now)
             accounts = db.execute(
                 """SELECT a.id, a.name, a.username, a.enabled, a.check_time, a.weekdays_only, a.check_location,
+                          a.schedule_mode, a.time_mode, a.check_time_end,
                           a.reminder_enabled, a.reminder_email,
                           a.session IS NOT NULL AS has_session, r.state, r.message, r.started_at, r.finished_at,
                           EXISTS(SELECT 1 FROM runs AS t WHERE t.account_id = a.id AND t.day = ?
@@ -169,11 +201,51 @@ class Accounts:
                    ORDER BY r.id DESC LIMIT 100"""
             ).fetchall()
         account_details = [dict(row) for row in accounts]
-        for account in account_details:
-            if account["check_location"] is not None:
-                account["check_location"] = json.loads(account["check_location"])
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for account in account_details:
+                if account["check_location"] is not None:
+                    account["check_location"] = json.loads(account["check_location"])
+                account["today_check_time"] = None
+                account["schedule_error"] = ""
+                if account["enabled"]:
+                    try:
+                        if self._calendar.matches(account["schedule_mode"], now.date()):
+                            account["today_check_time"] = self._target_time(db, account, now)
+                    except CalendarError as error:
+                        account["schedule_error"] = str(error)
         return {"accounts": account_details, "runs": [dict(row) for row in runs],
-                "today": day, "scheduler": self._scheduler.is_alive()}
+                "today": day, "scheduler": self._scheduler.is_alive(),
+                "schedule_modes": SCHEDULE_MODES, "time_modes": TIME_MODES,
+                "calendar_years": self._calendar.years, "device_location_supported": sys.platform == "win32"}
+
+    @staticmethod
+    def _target_time(db: sqlite3.Connection, account, now: datetime) -> Optional[str]:
+        if account["time_mode"] == "fixed":
+            return account["check_time"]
+        day = now.date().isoformat()
+        signature = f"random:{account['check_time']}:{account['check_time_end']}"
+        planned = db.execute("SELECT signature, target_time FROM schedule_targets WHERE account_id = ? AND day = ?",
+                             (account["id"], day)).fetchone()
+        if planned and planned["signature"] == signature:
+            return planned["target_time"]
+        if now.strftime("%H:%M") > account["check_time_end"]:
+            return None
+        first = max(minute_of_day(account["check_time"]), now.hour * 60 + now.minute)
+        last = minute_of_day(account["check_time_end"])
+        previous = db.execute("SELECT target_time FROM schedule_targets WHERE account_id = ? AND day < ? ORDER BY day DESC LIMIT 1",
+                              (account["id"], day)).fetchone()
+        excluded = minute_of_day(previous["target_time"]) if previous else -1
+        size = last - first + 1
+        avoid_previous = size > 1 and first <= excluded <= last
+        chosen = first + secrets.randbelow(size - int(avoid_previous))
+        if avoid_previous and chosen >= excluded:
+            chosen += 1
+        target = minute_text(chosen)
+        db.execute("""INSERT INTO schedule_targets (account_id, day, signature, target_time) VALUES (?, ?, ?, ?)
+                      ON CONFLICT(account_id, day) DO UPDATE SET signature = excluded.signature, target_time = excluded.target_time""",
+                   (account["id"], day, signature, target))
+        return target
 
     @staticmethod
     def _account(db: sqlite3.Connection, account_id: int) -> sqlite3.Row:
@@ -191,7 +263,7 @@ class Accounts:
         account_id = data.get("id")
         name, username, password = (data.get(key, "") for key in ("name", "username", "password"))
         check_time = data.get("check_time")
-        enabled, weekdays_only = data.get("enabled"), data.get("weekdays_only")
+        enabled = data.get("enabled")
         if (
             (account_id is not None and (type(account_id) is not int or not 0 < account_id < 2**63))
             or not isinstance(name, str) or not 0 < len(name.strip()) <= 50
@@ -200,37 +272,61 @@ class Accounts:
             or (account_id is None and not password)
         ):
             raise DashboardError("请检查账号名称、实习账号和密码。")
-        if not isinstance(check_time, str) or not _TIME.fullmatch(check_time) or type(enabled) is not bool or type(weekdays_only) is not bool:
+        if not isinstance(check_time, str) or not _TIME.fullmatch(check_time) or type(enabled) is not bool:
             raise DashboardError("请填写有效的签到时间和执行频率。")
 
         location = _encode_location(data.get("check_location"))
         username = username.strip()
         name = name.strip()
-        secret = seal(password.encode()) if password else None
+        secret = self._secrets.seal(password.encode()) if password else None
         try:
             with self._db() as db:
                 db.execute("BEGIN IMMEDIATE")
+                account = self._account(db, account_id) if account_id is not None else None
+                schedule_mode = data.get("schedule_mode")
+                if "schedule_mode" not in data:
+                    if "weekdays_only" in data:
+                        if type(data["weekdays_only"]) is not bool:
+                            raise DashboardError("请选择有效的签到频率。")
+                        schedule_mode = "weekdays" if data["weekdays_only"] else "daily"
+                    else:
+                        schedule_mode = account["schedule_mode"] if account else "weekdays"
+                time_mode = data.get("time_mode", account["time_mode"] if account else "fixed")
+                check_time_end = data.get("check_time_end", account["check_time_end"] if account else "")
+                if not isinstance(schedule_mode, str) or schedule_mode not in SCHEDULE_MODES:
+                    raise DashboardError("请选择有效的签到频率。")
+                if not isinstance(time_mode, str) or time_mode not in TIME_MODES:
+                    raise DashboardError("请选择固定时间或随机时间。")
+                if not isinstance(check_time_end, str) or (check_time_end and not _TIME.fullmatch(check_time_end)):
+                    raise DashboardError("请输入有效的结束时间。")
+                if time_mode == "random" and (not _TIME.fullmatch(check_time_end) or check_time >= check_time_end):
+                    raise DashboardError("随机时间段的结束时间须晚于开始时间，且应位于同一天。")
+                weekdays_only = schedule_mode == "weekdays"
+                if account is not None and "check_location" not in data:
+                    location = account["check_location"]
+                if sys.platform != "win32" and enabled and location is None:
+                    raise DashboardError("Linux 自动签到需要配置自定义位置。")
                 if account_id is None:
                     reminder_enabled, reminder_email = self._reminder(data)
                     return db.execute(
                         """INSERT INTO accounts (name, username, password, enabled, check_time, weekdays_only,
-                           check_location, reminder_enabled, reminder_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (name, username, secret, enabled, check_time, weekdays_only, location, reminder_enabled, reminder_email),
+                           check_location, reminder_enabled, reminder_email, schedule_mode, time_mode, check_time_end)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (name, username, secret, enabled, check_time, weekdays_only, location, reminder_enabled, reminder_email,
+                         schedule_mode, time_mode, check_time_end),
                     ).lastrowid
                 self._expire_runs(db, datetime.now(BEIJING))
-                account = self._account(db, account_id)
                 self._require_idle(db, account_id)
                 if username != account["username"]:
                     raise DashboardError("已有账号的登录名固定。请添加另一个实习账号。")
-                if "check_location" not in data:
-                    location = account["check_location"]
                 reminder_enabled, reminder_email = self._reminder(data, account)
                 db.execute(
                     """UPDATE accounts SET name = ?, username = ?, password = ?, session = ?,
                            enabled = ?, check_time = ?, weekdays_only = ?, check_location = ?,
-                           reminder_enabled = ?, reminder_email = ? WHERE id = ?""",
+                           reminder_enabled = ?, reminder_email = ?, schedule_mode = ?, time_mode = ?, check_time_end = ? WHERE id = ?""",
                     (name, username, secret or account["password"], None if secret else account["session"],
-                     enabled, check_time, weekdays_only, location, reminder_enabled, reminder_email, account_id),
+                     enabled, check_time, weekdays_only, location, reminder_enabled, reminder_email,
+                     schedule_mode, time_mode, check_time_end, account_id),
                 )
         except sqlite3.IntegrityError:
             raise DashboardError("这个实习账号已经添加。", HTTPStatus.CONFLICT) from None
@@ -269,7 +365,7 @@ class Accounts:
             sender = mailbox(data.get("sender"))
         except ValueError:
             raise DashboardError("请填写有效的发件邮箱。") from None
-        secret = seal(password.encode()) if password else None
+        secret = self._secrets.seal(password.encode()) if password else None
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute("SELECT host, sender, password FROM mail_settings WHERE id = 1").fetchone()
@@ -299,13 +395,18 @@ class Accounts:
             db.execute("BEGIN IMMEDIATE")
             self._expire_runs(db, now)
             account = self._account(db, account_id)
-            if source == "automatic" and (
-                not _schedule_due(account, now) or db.execute(
+            if source == "automatic":
+                try:
+                    eligible = bool(account["enabled"]) and self._calendar.matches(account["schedule_mode"], now.date())
+                    target = self._target_time(db, account, now) if eligible else None
+                    due = eligible and _schedule_due(account, now, self._calendar, target)
+                except CalendarError as error:
+                    raise DashboardError(str(error)) from None
+                if not due or db.execute(
                     "SELECT 1 FROM runs WHERE account_id = ? AND day = ? AND source = 'automatic'",
                     (account_id, day),
-                ).fetchone()
-            ):
-                return None
+                ).fetchone():
+                    return None
             self._require_idle(db, account_id)
             if db.execute("SELECT count(*) FROM runs WHERE state = 'running'").fetchone()[0] >= _WORKERS:
                 raise DashboardError("执行队列暂时已满，请稍后重试。", HTTPStatus.CONFLICT)
@@ -333,19 +434,31 @@ class Accounts:
         now = datetime.now(BEIJING)
         day = now.date().isoformat()
         with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
             due = db.execute(
-                """SELECT a.* FROM accounts a WHERE a.enabled = 1 AND a.check_time <= ? AND NOT EXISTS
+                """SELECT a.* FROM accounts a WHERE a.enabled = 1 AND NOT EXISTS
                    (SELECT 1 FROM runs r WHERE r.account_id = a.id AND r.day = ? AND r.source = 'automatic')
-                   ORDER BY a.check_time, a.id""", (now.strftime("%H:%M"), day),
+                   ORDER BY a.check_time, a.id""", (day,),
             ).fetchall()
-        for account in due:
+            ready = []
+            for account in due:
+                try:
+                    if self._calendar.matches(account["schedule_mode"], now.date()):
+                        target = self._target_time(db, account, now)
+                        if _schedule_due(account, now, self._calendar, target):
+                            ready.append(account["id"])
+                except CalendarError as error:
+                    marker = (account["id"], day)
+                    if marker not in self._calendar_warnings:
+                        logger.warning("账号 %s · %s", account["id"], error)
+                        self._calendar_warnings.add(marker)
+        for account_id in ready:
             if self._stop.is_set():
                 return
-            if _schedule_due(account, now):
-                try:
-                    self.launch(account["id"], "automatic")
-                except DashboardError:
-                    continue
+            try:
+                self.launch(account_id, "automatic")
+            except DashboardError:
+                continue
 
     def _execute(self, run_id: int, account: sqlite3.Row, source: str) -> None:
         heading = f"{' '.join(account['name'].split())} · {_SOURCE_NAMES[source]}"
@@ -356,11 +469,17 @@ class Accounts:
 
         def renew() -> bool:
             nonlocal password
-            password = unseal(account["password"]).decode()
+            password = self._secrets.unseal(account["password"]).decode()
             client.login(account["username"], password)
             return client.signed_today()
 
         def locate() -> tuple[float, float]:
+            if source == "automatic" and account["time_mode"] == "random":
+                current_time = datetime.now(BEIJING)
+                with self._db() as db:
+                    run_day = db.execute("SELECT day FROM runs WHERE id = ?", (run_id,)).fetchone()["day"]
+                if current_time.date().isoformat() != run_day or current_time.strftime("%H:%M") > account["check_time_end"]:
+                    raise LocationError("已超出今日随机签到时间段，本次不再提交。")
             if account["check_location"] is not None:
                 site = json.loads(account["check_location"])
                 return site["latitude"], site["longitude"]
@@ -369,7 +488,7 @@ class Accounts:
         try:
             if account["session"]:
                 try:
-                    state = json.loads(unseal(account["session"]))
+                    state = json.loads(self._secrets.unseal(account["session"]))
                     if isinstance(state, dict):
                         client.restore_session(state)
                 except (SecretError, ValueError):
@@ -405,7 +524,7 @@ class Accounts:
 
         try:
             if client.has_session:
-                session = seal(json.dumps(client.export_session(), ensure_ascii=False).encode())
+                session = self._secrets.seal(json.dumps(client.export_session(), ensure_ascii=False).encode())
         except SecretError:
             message += " 登录会话未能保存。"
         try:
@@ -437,7 +556,7 @@ class Accounts:
             mail_state = "not_configured"
             if config is not None:
                 try:
-                    send_reminder(config, unseal(config["password"]).decode(), account["reminder_email"],
+                    send_reminder(config, self._secrets.unseal(config["password"]).decode(), account["reminder_email"],
                                   account["name"], _SOURCE_NAMES[source], state, finished)
                     mail_state = "sent"
                 except (OSError, ValueError, SecretError) as error:

@@ -2,6 +2,9 @@ __pycache__/
 .venv/
 .env
 .env.*
+!.env.example
+data/
+secret.key
 *.sqlite3
 *.sqlite3-*
 build/

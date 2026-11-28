@@ -19,7 +19,7 @@ class AccountLocationTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         for name in ("seal", "unseal"):
-            patcher = patch(f"practice_tool.accounts.{name}", side_effect=lambda data: data)
+            patcher = patch(f"practice_tool.secrets.SecretStore.{name}", side_effect=lambda data: data)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.accounts = Accounts(Path(directory.name))
@@ -54,7 +54,7 @@ class AccountLocationTests(unittest.TestCase):
     def _save(self, location, account_id=None):
         return self.accounts.save({
             "id": account_id, "name": "Test account", "username": "test-user", "password": "test-password",
-            "enabled": True, "check_time": "00:00", "weekdays_only": False, "check_location": location,
+            "enabled": location is not None, "check_time": "00:00", "weekdays_only": False, "check_location": location,
         })
 
     def _run(self, account_id, source="manual"):

@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+.venv
+__pycache__
+**/__pycache__
+*.sqlite3*
+**/*.sqlite3*
+**/secret.key
+data
+build
+dist
+docs
+launcher
+tests
+tools

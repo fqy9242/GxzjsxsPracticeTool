@@ -80,13 +80,14 @@ def main() -> int:
     web.add_argument("--cert", help="HTTPS 证书文件")
     web.add_argument("--key", help="HTTPS 私钥文件")
     web.add_argument("--data-dir", type=Path, help="管理台的数据目录，默认使用当前用户的应用数据目录")
+    web.add_argument("--server", action="store_true", help="启用需要管理台密码的服务器模式，适用于 Docker/Linux 部署")
     args = parser.parse_args()
     if args.command == "check-in" and args.weekdays_only and args.at is None:
         check_in.error("--weekdays-only 需要与 --at 一起使用。")
 
     try:
         if args.command == "web":
-            serve_web(args.host, args.port, args.cert, args.key, args.data_dir)
+            serve_web(args.host, args.port, args.cert, args.key, args.data_dir, server_mode=args.server)
             return 0
         username, password = _read_credentials()
         if args.command == "check-in":

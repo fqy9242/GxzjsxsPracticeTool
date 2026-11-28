@@ -49,7 +49,7 @@
               <p>添加账号后，可以查询状态、立即签到或设定执行时间。</p>
             </div>
           </div>
-          <p class="footnote">计划按北京时间运行。服务启动后会执行当天已到时间的计划，每个账号每天自动尝试一次。</p>
+          <p class="footnote">计划按北京时间运行，每个账号每天自动尝试一次。随机时间每日生成并保存；错过整个时间段后不补签。</p>
         </section>
 
         <section id="history-view" aria-labelledby="page-title" hidden>
@@ -86,6 +86,7 @@
           <option value="current">使用设备当前位置</option>
           <option value="site">自定义位置</option>
         </select>
+        <p id="server-location-hint" class="field-hint" hidden>此服务器不支持设备定位，请为签到账号填写自定义位置。</p>
         <div id="location-fields" class="location-fields" hidden>
           <p class="field-hint">填写自定义位置的 WGS-84 坐标。手动和定时签到均使用此坐标提交；参考范围仅用于检测当前位置时对比距离。</p>
           <div class="coordinate-pair">
@@ -101,10 +102,21 @@
         </div>
         <div class="schedule">
           <label class="check-option"><input type="checkbox" name="enabled" id="schedule-enabled"> 启用自动签到</label>
+          <label for="schedule-days">执行日期</label>
+          <select id="schedule-days" name="schedule_mode">
+            <option value="weekdays">周一至周五</option>
+            <option value="daily">每天</option>
+            <option value="weekends">仅周末</option>
+            <option value="workdays">仅工作日（含调休）</option>
+            <option value="holidays">仅节假日（不含普通周末）</option>
+            <option value="days_off">节假日和周末（排除调休上班）</option>
+          </select>
           <div class="schedule-fields" id="schedule-fields">
-            <div><label for="schedule-time">时间 · 北京时间</label><input id="schedule-time" name="check_time" type="time" required></div>
-            <div><label for="schedule-days">频率</label><select id="schedule-days" name="weekdays_only"><option value="true">周一至周五</option><option value="false">每天</option></select></div>
+            <div><label for="time-mode">执行时间</label><select id="time-mode" name="time_mode"><option value="fixed">固定时间</option><option value="random">时间段内随机</option></select></div>
+            <div><label id="schedule-time-label" for="schedule-time">时间 · 北京时间</label><input id="schedule-time" name="check_time" type="time" required></div>
           </div>
+          <div id="random-time-fields" hidden><label for="schedule-time-end">结束时间 · 北京时间</label><input id="schedule-time-end" name="check_time_end" type="time" disabled></div>
+          <p id="schedule-hint" class="field-hint"></p>
         </div>
         <label class="check-option"><input type="checkbox" name="reminder_enabled" id="reminder-enabled"> 启用邮件提醒</label>
         <div id="reminder-fields" class="location-fields" hidden>

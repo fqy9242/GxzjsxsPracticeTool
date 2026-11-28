@@ -1,7 +1,10 @@
 """本地多账号签到管理台和浏览器单次签到入口。"""
 
 import json
+import logging
 import math
+import re
+import signal
 import sqlite3
 import ssl
 import threading
@@ -12,9 +15,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .accounts import Accounts, DashboardError, default_data_dir
+from .access import AccessError, ServerAccess
 from .client import PracticeClient, PracticeError
 from .location import LocationError, device_fix
 from .secrets import SecretError
+from .scheduling import CalendarError
 
 
 _ASSET_DIR = Path(__file__).with_name("web_assets")
@@ -36,9 +41,10 @@ class WebError(RuntimeError):
 
 
 class _WebServer(ThreadingHTTPServer):
-    def __init__(self, address, accounts: Accounts):
+    def __init__(self, address, accounts: Accounts, access: Optional[ServerAccess] = None):
         self.check_in_lock = threading.Lock()
         self.accounts = accounts
+        self.access = access
         super().__init__(address, _RequestHandler)
 
 
@@ -48,11 +54,17 @@ class _RequestHandler(BaseHTTPRequestHandler):
         super().setup()
 
     def do_GET(self) -> None:
+        path = self.path.partition("?")[0]
+        if path == "/healthz":
+            healthy = self.server.accounts._scheduler.is_alive()
+            self._send_json(HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE, healthy=healthy)
+            return
+        if not self._authorize():
+            return
         if not self._valid_host():
             self._send_json(HTTPStatus.FORBIDDEN, error="请使用服务启动时显示的地址。")
             return
 
-        path = self.path.partition("?")[0]
         if path in ("/api/dashboard", _MAIL_SETTINGS):
             if self._allow_dashboard():
                 try:
@@ -62,7 +74,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 except sqlite3.Error:
                     self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error="暂时无法读取管理台数据。")
             return
-        loopback = self._loopback_request()
+        loopback = self.server.access is not None or self._loopback_request()
         if path == "/":
             filename = "dashboard.html" if loopback else "index.html"
             content_type = "text/html; charset=utf-8"
@@ -78,6 +90,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content_type, (_ASSET_DIR / filename).read_bytes())
 
     def do_POST(self) -> None:
+        if not self._authorize():
+            return
         if not self._same_origin():
             self._send_json(HTTPStatus.FORBIDDEN, error="请从当前服务的页面发起请求。")
             return
@@ -207,6 +221,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, **result)
 
     def _valid_host(self) -> bool:
+        if self.server.access is not None:
+            host = self.headers.get("Host", "").lower()
+            if self.server.access.origin:
+                return host == self.server.access.host
+            return bool(re.fullmatch(r"(?:[a-z0-9_.-]+|\[[0-9a-f:]+\])(?::[0-9]{1,5})?", host))
         host = self.headers.get("Host", "").partition(":")[0].lower()
         return isinstance(self.connection, ssl.SSLSocket) or host in _LOOPBACK_HOSTS
 
@@ -218,7 +237,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         return self.client_address[0] == "127.0.0.1" and self.headers.get("Host", "").lower() in hosts
 
     def _allow_dashboard(self) -> bool:
-        if self._loopback_request() and self._same_origin() and (
+        if (self.server.access is not None or self._loopback_request()) and self._same_origin() and (
             self.command == "GET" or self.headers.get("Origin") is not None
         ):
             return True
@@ -229,11 +248,19 @@ class _RequestHandler(BaseHTTPRequestHandler):
         scheme = "https" if isinstance(self.connection, ssl.SSLSocket) else "http"
         origin = self.headers.get("Origin")
         fetch_site = self.headers.get("Sec-Fetch-Site")
+        expected = self.server.access.origin if self.server.access and self.server.access.origin else f"{scheme}://{self.headers.get('Host', '')}"
         return (
             self._valid_host()
             and fetch_site in (None, "same-origin")
-            and origin in (None, f"{scheme}://{self.headers.get('Host', '')}")
+            and origin in (None, expected)
         )
+
+    def _authorize(self) -> bool:
+        access = self.server.access
+        if access is None or access.accepts(self.headers.get("Authorization", "")):
+            return True
+        self._send_json(HTTPStatus.UNAUTHORIZED, error="请使用管理台用户名和密码登录。")
+        return False
 
     def _send_json(self, status: HTTPStatus, **data: Any) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -243,6 +270,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if status == HTTPStatus.UNAUTHORIZED:
+            self.send_header("WWW-Authenticate", 'Basic realm="PracticeTool", charset="UTF-8"')
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Permissions-Policy", "geolocation=(self)")
@@ -264,16 +293,17 @@ def _number_in_range(value: Any, minimum: float, maximum: float) -> bool:
 @contextmanager
 def open_web_server(
     host: str, port: int, cert: Optional[str] = None, key: Optional[str] = None,
-    data_dir: Optional[Path] = None,
+    data_dir: Optional[Path] = None, *, server_mode: bool = False,
 ):
     if not 0 <= port <= 65535:
         raise WebError("端口应在 0 到 65535 之间。")
     if bool(cert) != bool(key):
         raise WebError("请同时提供 HTTPS 证书和私钥。")
-    if not cert and host not in _LOOPBACK_HOSTS:
+    if not cert and host not in _LOOPBACK_HOSTS and not server_mode:
         raise WebError("从其他设备访问时请使用 HTTPS 证书和私钥。")
 
     try:
+        access = ServerAccess() if server_mode else None
         context = None
         if cert and key:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -281,22 +311,33 @@ def open_web_server(
 
         accounts = Accounts(data_dir or default_data_dir())
         try:
-            with _WebServer((host, port), accounts) as server:
+            with _WebServer((host, port), accounts, access) as server:
                 if context is not None:
                     server.socket = context.wrap_socket(server.socket, server_side=True)
                 accounts.start()
                 yield server
         finally:
             accounts.close()
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, SecretError, CalendarError, AccessError) as error:
         raise WebError(f"Web 服务启动或运行失败（{error}）。") from None
 
 
 def serve_web(
     host: str, port: int, cert: Optional[str] = None, key: Optional[str] = None,
-    data_dir: Optional[Path] = None,
+    data_dir: Optional[Path] = None, *, server_mode: bool = False,
 ) -> None:
-    with open_web_server(host, port, cert, key, data_dir) as server:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    with open_web_server(host, port, cert, key, data_dir, server_mode=server_mode) as server:
         protocol = "https" if cert else "http"
+        previous = None
+        if threading.current_thread() is threading.main_thread():
+            def stop(signum, frame):
+                server.accounts.stop_scheduling()
+                threading.Thread(target=server.shutdown, daemon=True).start()
+            previous = signal.signal(signal.SIGTERM, stop)
         print(f"PracticeTool 已监听 {protocol}://{host}:{server.server_port}/", flush=True)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            if previous is not None:
+                signal.signal(signal.SIGTERM, previous)

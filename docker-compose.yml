@@ -1,0 +1,31 @@
+services:
+  practice-tool:
+    build: .
+    image: practice-tool:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${PRACTICE_BIND:-127.0.0.1}:${PRACTICE_PORT:-8765}:8765"
+    environment:
+      TZ: Asia/Shanghai
+      PRACTICE_ADMIN_USERNAME: "${PRACTICE_ADMIN_USERNAME:-admin}"
+      PRACTICE_ADMIN_PASSWORD: "${PRACTICE_ADMIN_PASSWORD:?Please set PRACTICE_ADMIN_PASSWORD in .env (at least 12 characters)}"
+      PRACTICE_PUBLIC_ORIGIN: "${PRACTICE_PUBLIC_ORIGIN:-}"
+    volumes:
+      - practice-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  practice-data:

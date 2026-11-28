@@ -101,7 +101,12 @@ function accountRow(account) {
   if (account.reminder_enabled) identity.append(element("span", "邮件提醒已开启", "account-sub"));
   const plan = element("td");
   if (account.enabled) {
-    plan.append(element("strong", account.check_time), element("span", account.weekdays_only ? "周一至周五" : "每天", "account-sub"));
+    const random = account.time_mode === "random";
+    const mode = account.schedule_mode || (account.weekdays_only ? "weekdays" : "daily");
+    plan.append(element("strong", random ? `${account.check_time}–${account.check_time_end} 随机` : account.check_time),
+      element("span", data.schedule_modes?.[mode] || mode, "account-sub"));
+    if (random && account.today_check_time) plan.append(element("span", `今日计划 ${account.today_check_time}`, "account-sub"));
+    if (account.schedule_error) plan.append(element("span", account.schedule_error, "account-sub"));
   } else {
     plan.append(badge("已关闭", "muted"));
   }
@@ -153,6 +158,10 @@ function refresh() {
     refreshing = request("/api/dashboard").then((next) => {
       const key = JSON.stringify(next);
       data = next;
+      const supportsLocation = data.device_location_supported !== false;
+      fields.location_mode.querySelector('[value="current"]').disabled = !supportsLocation;
+      previewLocationButton.hidden = !supportsLocation;
+      byId("server-location-hint").hidden = supportsLocation;
       const service = byId("service");
       service.textContent = data.scheduler ? "调度运行中" : "调度已停止";
       service.dataset.tone = data.scheduler ? "positive" : "warning";
@@ -195,6 +204,23 @@ function updateLocationFields() {
   const showSite = fields.location_mode.value === "site";
   byId("location-fields").hidden = !showSite;
   fields.site_latitude.disabled = fields.site_longitude.disabled = fields.site_radius.disabled = !showSite;
+}
+
+function updateScheduleFields() {
+  const random = fields.time_mode.value === "random";
+  byId("random-time-fields").hidden = !random;
+  fields.check_time_end.disabled = !random;
+  fields.check_time_end.required = random;
+  fields.check_time_end.min = fields.check_time.value;
+  fields.check_time_end.setCustomValidity(random && fields.check_time_end.value
+    && fields.check_time_end.value <= fields.check_time.value ? "结束时间须晚于开始时间，且应位于同一天。" : "");
+  byId("schedule-time-label").textContent = random ? "开始时间 · 北京时间" : "时间 · 北京时间";
+  const mode = fields.schedule_mode.value;
+  const calendar = ["workdays", "holidays", "days_off"].includes(mode);
+  const hints = [];
+  if (calendar) hints.push(`按中国大陆放假调休安排执行，日历年份：${(data.calendar_years || []).join("、")}。`);
+  if (random) hints.push("按分钟每天生成并保存执行时间，有多个可选分钟时避开上一次计划时间；错过整个时间段后当天不补签。");
+  byId("schedule-hint").textContent = hints.join(" ");
 }
 
 function resetLocationPreview() {
@@ -255,14 +281,17 @@ function openEditor(account = null) {
   fields.password.placeholder = account ? "留空保留原密码" : "";
   fields.password.required = !account;
   const site = account?.check_location;
-  fields.location_mode.value = site ? "site" : "current";
+  fields.location_mode.value = site || data.device_location_supported === false ? "site" : "current";
   fields.site_latitude.value = site?.latitude ?? "";
   fields.site_longitude.value = site?.longitude ?? "";
   fields.site_radius.value = site?.radius ?? 100;
   updateLocationFields();
   fields.enabled.checked = Boolean(account?.enabled);
   fields.check_time.value = account?.check_time || "09:00";
-  fields.weekdays_only.value = account?.weekdays_only === 0 ? "false" : "true";
+  fields.schedule_mode.value = account?.schedule_mode || (account?.weekdays_only === 0 ? "daily" : "weekdays");
+  fields.time_mode.value = account?.time_mode || "fixed";
+  fields.check_time_end.value = account?.check_time_end || "10:00";
+  updateScheduleFields();
   fields.reminder_enabled.checked = Boolean(account?.reminder_enabled);
   fields.reminder_email.value = account?.reminder_email || "";
   updateReminderFields();
@@ -305,6 +334,9 @@ byId("add-account").addEventListener("click", () => openEditor());
 byId("close-dialog").addEventListener("click", () => dialog.close());
 byId("cancel-dialog").addEventListener("click", () => dialog.close());
 fields.location_mode.addEventListener("change", updateLocationFields);
+for (const field of [fields.schedule_mode, fields.time_mode, fields.check_time, fields.check_time_end]) {
+  field.addEventListener("change", updateScheduleFields);
+}
 fields.reminder_enabled.addEventListener("change", updateReminderFields);
 dialog.addEventListener("close", () => {
   fields.password.value = "";
@@ -362,7 +394,9 @@ form.addEventListener("submit", async (event) => {
       } : null,
       enabled: fields.enabled.checked,
       check_time: fields.check_time.value,
-      weekdays_only: fields.weekdays_only.value === "true",
+      schedule_mode: fields.schedule_mode.value,
+      time_mode: fields.time_mode.value,
+      check_time_end: fields.time_mode.value === "random" ? fields.check_time_end.value : "",
       reminder_enabled: fields.reminder_enabled.checked,
       reminder_email: fields.reminder_enabled.checked ? fields.reminder_email.value : editing?.reminder_email || "",
     });
